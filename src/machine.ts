@@ -11,6 +11,9 @@ import { Rtc146818 } from './chips/rtc146818';
 import { Uart16450 } from './chips/uart16450';
 import { Wd1003 } from './chips/wd1003';
 import { I286, type CpuBus } from './cpu/i286';
+import { Timing } from './cpu/timing';
+import { TIMING_286 } from './cpu/timing-286';
+import { TIMING_8088 } from './cpu/timing-8088';
 import type { FloppyImage } from './drive/floppy-image';
 import { MODELS, type ModelSpec } from './models';
 import { captureState, restoreState, type StateNode } from './state/snapshot';
@@ -19,14 +22,16 @@ import { Mcga } from './video/mcga';
 import { Vga } from './video/vga';
 
 const BASE_MEMORY = 0xa0000;
+/** The chips' measured clocks: the 8088's for the 8086 machines too (their faster bus is in the model's scale). */
+const CHIP_TIMING = { '286': new Timing(TIMING_286), '8086': new Timing(TIMING_8088), '8088': new Timing(TIMING_8088) };
 /** The most of a ROM that shows below 1 MB, at E0000h-FFFFFh (all of it shows at the top of the 16 MB). */
 const LOW_ROM_BYTES = 0x20000;
 /** Devices are brought up to the CPU's time at least this often (100 µs). */
 const SLICE_CYCLES = 200;
 /** Port 61h's refresh bit toggles every 15 µs or so. */
 const REFRESH_SECONDS = 15e-6;
-/** The longest the power-on self test is taken to run (4 MB takes about 45 seconds to check). */
-const MAX_START_SECONDS = 60;
+/** The longest the power-on self test is taken to run (4 MB takes about 45 seconds to check, an XT's 640K nearly a minute). */
+const MAX_START_SECONDS = 90;
 
 /** Port 1 of the keyboard controller: the drive type and planar memory bits on the Model 30 286, by memory size in KB. */
 function keyboardPort(model: ModelSpec, kilobytes: number): number {
@@ -90,6 +95,7 @@ export class Machine implements CpuBus {
   /** Timer clocks towards the next refresh request on the PC and XT. */
   private refreshTicks = 0;
   private irqPending = false;
+  private nmiPending = false;
   /** The BIOS's power-on self test is running: from switching on (or a reset) until code runs from RAM. */
   starting = true;
   private startedAt = 0;
@@ -122,6 +128,7 @@ export class Machine implements CpuBus {
       picIcw: (index) => this.picMaster.icw[index],
       portBChanged: (value) => this.setPortB(value),
       timer2Output: () => this.pit.output(2),
+      nmi: () => (this.nmiPending = true),
     });
     this.mcga.onInterrupt = (high) => this.picMaster.setLine(2, high);
     this.clock.onInterrupt = () => {
@@ -255,6 +262,7 @@ export class Machine implements CpuBus {
     this.speaker.restart(0);
     this.cpu.reset();
     this.cpu.is8086 = this.is8086;
+    this.cpu.timing = CHIP_TIMING[this.model.cpu];
     this.cpu.cycleScale = this.model.cycleScale;
     this.cpu.cycles = 0;
     this.deviceCycles = 0;
@@ -270,6 +278,7 @@ export class Machine implements CpuBus {
     const cycles = this.cpu.cycles;
     this.cpu.reset();
     this.cpu.is8086 = this.is8086;
+    this.cpu.timing = CHIP_TIMING[this.model.cpu];
     this.cpu.cycleScale = this.model.cycleScale;
     this.cpu.cycles = cycles;
     this.starting = true;
@@ -366,6 +375,7 @@ export class Machine implements CpuBus {
   in8(port: number): number {
     port &= 0xffff;
     this.cpu.cycles += this.model.ioWait;
+    this.cpu.waitCycles += this.model.ioWait;
     if (port < 0x10 || (port >= 0xc0 && port < 0xe0) || (port >= 0x80 && port < 0x90)) return this.dma.read(port);
     if (this.hasPpi && port >= 0x60 && port <= 0x63) {
       this.syncDevices();
@@ -447,6 +457,7 @@ export class Machine implements CpuBus {
   out8(port: number, value: number): void {
     port &= 0xffff;
     this.cpu.cycles += this.model.ioWait;
+    this.cpu.waitCycles += this.model.ioWait;
     if (port < 0x10 || (port >= 0xc0 && port < 0xe0) || (port >= 0x80 && port < 0x90)) {
       this.dma.write(port, value);
       return;
@@ -618,6 +629,10 @@ export class Machine implements CpuBus {
     while (cpu.cycles < end) {
       const sliceEnd = Math.min(end, cpu.cycles + SLICE_CYCLES);
       while (cpu.cycles < sliceEnd) {
+        if (this.nmiPending) {
+          this.nmiPending = false;
+          cpu.nmi();
+        }
         if (this.irqPending && cpu.acceptsInterrupts) cpu.interrupt(this.picMaster.acknowledge());
         if (cpu.halted) {
           cpu.cycles = sliceEnd;

@@ -1,4 +1,4 @@
-import { FloppyImage } from './floppy-image';
+import { FloppyImage, unpadImage } from './floppy-image';
 import { isZip, usableFilesInZip } from './zip';
 
 export const STATE_EXTENSION = '.ps2state';
@@ -36,7 +36,7 @@ export async function readMedia(file: File): Promise<Media> {
     // A save state (they are gzipped too) rather than a disk.
     if (data[0] === 0x7b) return { kind: 'state', bytes: new Uint8Array(await file.arrayBuffer()) };
   }
-  return { kind: 'disk', disk: new FloppyImage(data, file.name) };
+  return { kind: 'disk', disk: new FloppyImage(unpadImage(data), file.name) };
 }
 
 /** "Game (Disk 1 of 2).img" → "Game (Disk 1 of 2)". */

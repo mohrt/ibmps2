@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { FloppyImage, formattedDisk, geometryForSize } from '../src/drive/floppy-image';
+import { FloppyImage, formattedDisk, geometryForSize, unpadImage } from '../src/drive/floppy-image';
 import { RomLibrary, type StoredRom } from '../src/roms/rom-library';
 import { changedSectors } from '../src/storage/disk-saves';
 import { MemoryStore } from '../src/storage/store';
@@ -34,6 +34,22 @@ describe('floppy images', () => {
     expect(disk[21]).toBe(0xfd);
     // The second FAT follows the first's two sectors.
     expect([...disk.subarray(3 * 512, 3 * 512 + 3)]).toEqual([0xfd, 0xff, 0xff]);
+  });
+
+  it('take out a smaller disk stored in a bigger image', () => {
+    const disk = formattedDisk('720 KB');
+    disk.fill(0x41, 512 * 20, 512 * 21);
+    const padded = new Uint8Array(1474560).fill(0xf6);
+    padded.set(disk);
+    const same = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((byte, i) => byte === b[i]);
+    expect(same(unpadImage(padded), disk)).toBe(true);
+    // Written a track at a time onto a 1.44 MB format: each track's 9 sectors, then 9 blank ones.
+    const doubled = new Uint8Array(1474560).fill(0xf6);
+    for (let track = 0; track < 160; track++) doubled.set(disk.subarray(track * 4608, track * 4608 + 4608), track * 9216);
+    expect(same(unpadImage(doubled), disk)).toBe(true);
+    // A real 1.44 MB disk stays as it is.
+    const full = formattedDisk();
+    expect(unpadImage(full)).toBe(full);
   });
 
   it('find the sectors a program changed', () => {

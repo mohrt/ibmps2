@@ -86,6 +86,10 @@ export class Fdc {
   private headDirectionOut = false;
   /** Status register A's step latch: set by a seek that steps the head, cleared by reading the DIR. */
   private stepped = false;
+  /** The head the last command selected (status register A shows it). */
+  private head = 0;
+  /** A write or format since status register B was last read (its write enable and write data bits). */
+  private wrote = false;
 
   constructor(
     private readonly dma: Dma8237,
@@ -144,7 +148,7 @@ export class Fdc {
         if (this.headDirectionOut) value |= 0x01;
         if (drive.disk?.writeProtected) value |= 0x02;
         if (drive.disk && this.motorOn(this.dor & 1) && this.time % REVOLUTION_SECONDS < INDEX_PULSE_SECONDS) value |= 0x04;
-        value |= 0x08;
+        if (this.head === 0) value |= 0x08;
         if (drive.cylinder === 0) value |= 0x10;
         if (this.stepped) value |= 0x20;
         if (this.irq) value |= 0x80;
@@ -154,6 +158,11 @@ export class Fdc {
         if (!ps2) return 0xff;
         let value = this.drives[1].connected ? 0 : 0x80;
         value |= (this.dor & 1) === 0 ? 0x43 : 0x23;
+        // Bits 2-4 latch activity since the last read: write enable and write data while writing,
+        // and read data, which never stops while a disk turns under the head.
+        if (this.selectedDrive().disk && this.motorOn(this.dor & 1)) value |= 0x08;
+        if (this.wrote) value |= 0x14;
+        this.wrote = false;
         return value;
       }
       case 2:
@@ -173,8 +182,11 @@ export class Fdc {
         const changed = d.changed || !d.disk;
         // On the AT the other bits are the fixed disk adapter's.
         if (!ps2) return (this.motorOn(drive) && changed ? 0x80 : 0) | 0x7f;
-        if (!this.motorOn(drive)) return 0;
-        return (changed ? 0x00 : 0x80) | (this.dor & 0x08) | (this.noPrecomp ? 4 : 0) | (this.rate & 3);
+        // The low bits are the controller's own, there with the motors off too;
+        // the disk change line only comes from a drive whose motor is on.
+        const own = (this.dor & 0x08) | (this.noPrecomp ? 4 : 0) | (this.rate & 3);
+        if (!this.motorOn(drive)) return own;
+        return (changed ? 0x00 : 0x80) | own;
       }
       default:
         return 0xff;
@@ -263,6 +275,9 @@ export class Fdc {
     const op = command[0] & 0x1f;
     const unit = command[1] & 3;
     const head = (command[1] >> 2) & 1;
+    // Every command but SPECIFY and SENSE INTERRUPT STATUS selects a drive's head.
+    if (op !== 0x03 && op !== 0x08) this.head = head;
+    if (op === 0x05 || op === 0x09 || op === 0x0d) this.wrote = true;
     switch (op) {
       case 0x03:
         // SPECIFY's step rate and head times don't matter here; PCs always use DMA.
@@ -437,7 +452,8 @@ export class Fdc {
       }
       if (write) disk.dirty = true;
       // The next sector, for the result (and for the transfer to go on to).
-      const last = sector >= endOfTrack;
+      // The track ends at the sector numbered EOT (a track formatted with other numbers just goes on).
+      const last = sector === endOfTrack;
       if (last) {
         sector = 1;
         if (multiTrack && head === 0 && disk.geometry.heads > 1) {
@@ -478,11 +494,17 @@ export class Fdc {
       return;
     }
     drive.activity = 0.05;
+    const cylinder = this.diskCylinder(drive);
+    const ids: number[] = [];
     for (let i = 0; i < count; i++) {
       const id = [0, 0, 0, 0].map(() => this.dma.readByte(DMA_CHANNEL)[0]);
-      const offset = disk.offset(this.diskCylinder(drive), head, id[2]);
+      ids.push(id[2]);
+      const offset = disk.slotOffset(cylinder, head, i);
       if (offset >= 0) disk.bytes.fill(filler, offset, offset + SECTOR_BYTES);
     }
+    // The track answers to the sector numbers it was given.
+    if (ids.every((id, i) => id === i + 1)) disk.sectorIds.delete(cylinder * 2 + head);
+    else disk.sectorIds.set(cylinder * 2 + head, ids);
     disk.dirty = true;
     done(0, 0);
   }

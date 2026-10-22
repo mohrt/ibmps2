@@ -71,6 +71,43 @@ export function geometryForSize(bytes: number): FloppyGeometry | null {
   return FORMATS.find((format) => format.cylinders * format.heads * format.sectors * SECTOR_BYTES === bytes) ?? null;
 }
 
+/** Whether bytes were never written: all FORMAT's filler (F6h), or all zero. */
+function blank(bytes: Uint8Array): boolean {
+  const filler = bytes[0];
+  return (filler === 0xf6 || filler === 0) && bytes.every((byte) => byte === filler);
+}
+
+/**
+ * Some archived images are bigger than the disk their boot sector describes: a 720 KB disk
+ * stored as 1.44 MB, either padded after it or written onto a 1.44 MB format a track at a
+ * time (each track's 9 sectors, then 9 blank ones). Such an image is given back as the disk
+ * it holds; others as they are.
+ */
+export function unpadImage(bytes: Uint8Array): Uint8Array {
+  if (bytes.length < SECTOR_BYTES || bytes[510] !== 0x55 || bytes[511] !== 0xaa) return bytes;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sectors = view.getUint16(19, true);
+  const perTrack = view.getUint16(24, true);
+  const heads = view.getUint16(26, true);
+  const holds = FORMATS.find((format) => format.sectors === perTrack && format.heads === heads && format.cylinders * heads * perTrack === sectors);
+  const stored = geometryForSize(bytes.length);
+  if (view.getUint16(11, true) !== SECTOR_BYTES || !holds || !stored || sectors * SECTOR_BYTES >= bytes.length) return bytes;
+  const track = (index: number, from: number, to: number) =>
+    bytes.subarray((index * stored.sectors + from) * SECTOR_BYTES, (index * stored.sectors + to) * SECTOR_BYTES);
+  if (blank(bytes.subarray(sectors * SECTOR_BYTES))) return bytes.slice(0, sectors * SECTOR_BYTES);
+  const tracks = holds.cylinders * heads;
+  if (stored.sectors > perTrack && stored.cylinders === holds.cylinders && stored.heads === heads) {
+    let doubled = true;
+    for (let i = 0; i < tracks && doubled; i++) doubled = blank(track(i, perTrack, stored.sectors));
+    if (doubled) {
+      const disk = new Uint8Array(sectors * SECTOR_BYTES);
+      for (let i = 0; i < tracks; i++) disk.set(track(i, 0, perTrack), i * perTrack * SECTOR_BYTES);
+      return disk;
+    }
+  }
+  return bytes;
+}
+
 /** A PC floppy disk image: the sectors in order, cylinder by cylinder and head by head. */
 export class FloppyImage {
   readonly geometry: FloppyGeometry;
@@ -95,10 +132,22 @@ export class FloppyImage {
     return new FloppyImage(formattedDisk(format), name);
   }
 
+  /**
+   * Sector numbers tracks were formatted with where they aren't 1, 2, 3... (a FORMAT can number
+   * them as it likes), by track (cylinder * 2 + head): the number each slot of the track answers to.
+   */
+  readonly sectorIds = new Map<number, number[]>();
+
   /** The byte offset of a sector, or -1 if the disk has no such sector. */
   offset(cylinder: number, head: number, sector: number): number {
+    const ids = this.sectorIds.get(cylinder * 2 + head);
+    return this.slotOffset(cylinder, head, ids ? ids.indexOf(sector) : sector - 1);
+  }
+
+  /** The byte offset of a track's nth sector (from 0), or -1 if there is none. */
+  slotOffset(cylinder: number, head: number, slot: number): number {
     const { cylinders, heads, sectors } = this.geometry;
-    if (cylinder >= cylinders || head >= heads || sector < 1 || sector > sectors) return -1;
-    return ((cylinder * heads + head) * sectors + sector - 1) * SECTOR_BYTES;
+    if (cylinder >= cylinders || head >= heads || slot < 0 || slot >= sectors) return -1;
+    return ((cylinder * heads + head) * sectors + slot) * SECTOR_BYTES;
   }
 }

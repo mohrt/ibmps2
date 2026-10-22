@@ -54,7 +54,8 @@ describe.skipIf(listed.length === 0)('free disks (npm run fetch:games)', () => {
       it(`${game.file} boots and draws on the ${id}`, { timeout: 60000 }, async (context) => {
         const machine = await startModel(id, loadDisk(join(gamesDir, game.file)));
         if (!machine) return context.skip();
-        expect(runToBoot(machine)).toBeLessThan(40);
+        // A 4.77 MHz XT counts its 640K for nearly a minute.
+        expect(runToBoot(machine, 90)).toBeLessThan(90);
         runSeconds(machine, 4);
         // Without a disk the PS/2s ask for one (with the function keys along the bottom) and the PCs start BASIC.
         const text = screenText(machine.video);

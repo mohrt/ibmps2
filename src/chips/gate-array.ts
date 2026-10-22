@@ -9,6 +9,8 @@ export interface GateArrayHost {
   /** Port 61h's low bits changed: bit 0 gates timer 2, bit 1 drives the speaker. */
   portBChanged(value: number): void;
   timer2Output(): boolean;
+  /** The diagnostic NMI (when the NMI mask lets it through). */
+  nmi(): void;
 }
 
 /** How long a byte takes on an interface's serial line (11 bits at about 10 kHz), either way. */
@@ -136,8 +138,12 @@ export class GateArray {
         this.host.portBChanged(value);
         break;
       case 0x63:
-        // With port 69h bit 7 set, bits 2-7 drive IRQ 2-7 for the BIOS's interrupt test.
-        if (this.port69 & 0x80) this.setDiagnosticIrqs(value & 0xfc);
+        // With port 69h bit 7 set, bits 2-7 drive IRQ 2-7 for the BIOS's interrupt test, and
+        // (with bit 2 set too) a rising bit 0 the NMI.
+        if (this.port69 & 0x80) {
+          this.setDiagnosticIrqs(value & 0xfc);
+          if (this.port69 & 0x04 && !(this.port63 & 0x01) && value & 0x01 && this.nmiMask & 0x80) this.host.nmi();
+        }
         this.port63 = value;
         break;
       case 0x65:

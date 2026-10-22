@@ -16,7 +16,7 @@ export interface ModelSpec {
   cpu: '286' | '8086' | '8088';
   /** The CPU's clock. */
   cpuHz: number;
-  /** How much longer instructions take than the 286's counts (the 8088's slower bus and address arithmetic). */
+  /** How much longer instructions take than the chip's measured clocks (the machine's wait states; less for the 8086's 16-bit bus). */
   cycleScale: number;
   /** CPU cycles an I/O port access adds for the bus's wait states. */
   ioWait: number;
@@ -146,8 +146,8 @@ function ps2_8086(): Omit<ModelSpec, 'id' | 'name' | 'year' | 'memoryChoices' | 
   return {
     cpu: '8086',
     cpuHz: 8_000_000,
-    cycleScale: 1.5,
-    ioWait: 2,
+    cycleScale: 0.75,
+    ioWait: 1,
     defaultMemory: 640,
     port92: 'none',
     cmos: 'none',
@@ -165,8 +165,9 @@ function pc8088(): Omit<ModelSpec, 'id' | 'name' | 'year' | 'keyboard' | 'romHin
   return {
     cpu: '8088',
     cpuHz: 4_772_727,
-    cycleScale: 2,
-    ioWait: 4,
+    cycleScale: 1,
+    // The ISA bus's I/O wait state.
+    ioWait: 1,
     memoryChoices: [256, 512, 640],
     defaultMemory: 640,
     port92: 'none',

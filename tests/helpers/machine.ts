@@ -96,7 +96,7 @@ export function runUntilText(machine: Machine, text: string, limitSeconds = 20):
   return false;
 }
 
-const CODES: Record<string, string> = { ' ': 'Space', '\n': 'Enter', '.': 'Period', '\\': 'Backslash', '-': 'Minus', '/': 'Slash' };
+const CODES: Record<string, string> = { ' ': 'Space', '\n': 'Enter', '.': 'Period', '\\': 'Backslash', '-': 'Minus', '/': 'Slash', ',': 'Comma' };
 /** Characters typed with Shift, by their key. */
 const SHIFTED: Record<string, string> = { ':': 'Semicolon', '*': 'Digit8' };
 

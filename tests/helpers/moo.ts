@@ -18,6 +18,8 @@ export interface MooTest {
   final: MooState;
   exception: { vector: number; flagAddress: number } | null;
   hash: string;
+  /** The clocks the instruction took on the chip, from an empty prefetch queue (0 if not recorded). */
+  cycles: number;
 }
 
 function readState(view: DataView, start: number, end: number): MooState {
@@ -63,6 +65,7 @@ export function readMoo(gzipped: Uint8Array): MooTest[] {
         final: { regs: {}, ram: [] },
         exception: null,
         hash: '',
+        cycles: 0,
       };
       let at = body + 4;
       while (at < body + length) {
@@ -78,6 +81,8 @@ export function readMoo(gzipped: Uint8Array): MooTest[] {
           test.final = readState(view, start, start + subLength);
         } else if (sub === 'EXCP') {
           test.exception = { vector: data[start], flagAddress: view.getUint32(start + 1, true) };
+        } else if (sub === 'CYCL') {
+          test.cycles = view.getUint32(start, true);
         } else if (sub === 'HASH') {
           test.hash = Buffer.from(data.subarray(start, start + subLength)).toString('hex');
         }

@@ -525,7 +525,9 @@ export class Vga {
       case 0x3c4:
         return this.seqIndex;
       case 0x3c5:
-        return this.seq[this.seqIndex & 7];
+        // IBM's VGA has sequencer registers 0-4 and graphics registers 0-8; the others read back
+        // nothing (so programs looking for a Super VGA's extended registers don't find them).
+        return this.seqIndex <= 4 ? this.seq[this.seqIndex] : 0xff;
       case 0x3c6:
         return this.dacMask;
       case 0x3c7:
@@ -547,7 +549,7 @@ export class Vga {
       case 0x3ce:
         return this.gcIndex;
       case 0x3cf:
-        return this.gc[this.gcIndex & 0xf];
+        return this.gcIndex <= 8 ? this.gc[this.gcIndex] : 0xff;
       case 0x3b4:
       case 0x3d4:
         return this.crtcIndex;
@@ -582,7 +584,7 @@ export class Vga {
         this.seqIndex = value & 7;
         break;
       case 0x3c5:
-        this.seq[this.seqIndex] = value;
+        if (this.seqIndex <= 4) this.seq[this.seqIndex] = value;
         break;
       case 0x3c6:
         this.dacMask = value;
@@ -610,7 +612,7 @@ export class Vga {
         this.gcIndex = value & 0xf;
         break;
       case 0x3cf:
-        this.gc[this.gcIndex] = value;
+        if (this.gcIndex <= 8) this.gc[this.gcIndex] = value;
         break;
       case 0x3b4:
       case 0x3d4:

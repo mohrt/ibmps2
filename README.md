@@ -42,7 +42,7 @@ The toolbar has pause, Ctrl-Alt-Del, power cycle and full screen. **Machine setu
 - **Memory:** from 256 KB to 640 KB on the PC and XT, 512 or 640 KB on the Model 25; up to 4 MB on the 286s (640K and the rest as extended memory).
 - **Second floppy drive (B:)**
 
-Nothing changes until **Restart**, which switches the machine off and on. Each machine's CMOS settings are kept in the browser, as its battery would keep them, and set afresh (as IBM's Reference Diskette or the AT's setup disk would) when the memory or drives change. **Fast start-up** runs the machine flat out through its power-on self test, which takes some 20 seconds on a PS/2 with 2 MB and half a minute on an XT counting its 640K.
+Nothing changes until **Restart**, which switches the machine off and on. Each machine's CMOS settings are kept in the browser, as its battery would keep them, and set afresh (as IBM's Reference Diskette or the AT's setup disk would) when the memory or drives change. **Fast start-up** runs the machine flat out through its power-on self test, which takes some 20 seconds on a PS/2 with 2 MB and nearly a minute on an XT counting its 640K.
 
 Save states keep the whole machine, floppies included, in the browser, and can be exported and imported as `.ps2state` files. A state only loads with the ROM it was saved with.
 
@@ -76,7 +76,7 @@ Your disk images are never changed. What programs write to a disk is kept in the
 
 Both of IBM's Model 30 286 BIOSes, the Model 30's and Model 25's, the PC/AT's, the PC/XT's and the PC's pass their power-on self tests with no errors, FreeDOS boots on all of them, and the free disks run. The PS/1 starts from a disk in A: when there is one (its CMOS start-up setting is set up that way), and its built-in DOS shell otherwise.
 
-The CPU's timing is per instruction, from Intel's clock counts, not per bus cycle, and it isn't slowed by the memory's wait states. The chips are brought up to the CPU's time at least every 100 µs, and whenever the CPU reads one whose state depends on time (the timer, the VGA's status, the keyboard controller, the CMOS clock).
+The CPU's timing is per instruction, not per bus cycle: each instruction takes the clocks the real chips took for it, as measured by the 8088 and 80286 SingleStepTests (by opcode, operand kind and whether it jumped, with REP strings and shifts by their count), scaled for each machine's bus (the 8086's wider one, the wait states). The machines run within a few percent of the published benchmark scores of the real ones: the PC and XT about a twelfth of a 286 PS/2's speed, the 8086 PS/2s about four tenths. The chips are brought up to the CPU's time at least every 100 µs, and whenever the CPU reads one whose state depends on time (the timer, the VGA's status, the keyboard controller, the CMOS clock).
 
 Not covered: hard disks (the Model 25's and 30's, and the AT's and XT's), the 8087 and 80287, the MDA, and the serial and parallel ports' devices.
 
@@ -89,6 +89,7 @@ npm run dev              # http://localhost:5173
 npm test                 # tests needing downloaded files or your ROMs skip when they're missing
 npm run fetch:286        # optional: the 80286 SingleStepTests (about 300 MB)
 npm run fetch:8088       # optional: the 8088 SingleStepTests (about 200 MB)
+MAKE_TIMING=8088 npx vitest run tests/make-timing.test.ts   # remakes src/cpu/timing-8088.ts from them (or 80286)
 ```
 
 The tests that run a BIOS use your own ROMs, put in `roms/` (never committed; any folder layout, as every file in it is checked): `33f5381a.bin` and `27F4092.BIN` for the Model 30 286, and the other machines' chips for theirs. Each machine's tests skip without its ROMs. `npm test` also boots FreeDOS and the free disks. `SHOTS=/tmp/shots npm test` saves screenshots, and `I286=00,F6.7 npm test` runs only some of the 80286 tests.

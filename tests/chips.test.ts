@@ -62,6 +62,25 @@ describe('8259 interrupt controllers', () => {
 });
 
 describe('8254 timer', () => {
+  it('counts 65536 in mode 2 when given 0 (and keeps to its period)', () => {
+    const pit = new Pit8254();
+    const edges: number[] = [];
+    pit.onOutput = (index, high, tick) => {
+      if (index === 0 && !high) edges.push(tick);
+    };
+    pit.write(0x43, 0x34);
+    pit.write(0x40, 0);
+    pit.write(0x40, 0);
+    for (let i = 0; i < 300; i++) pit.advance(1000);
+    expect(edges.length).toBe(4);
+    expect(edges[1] - edges[0]).toBe(0x10000);
+    pit.write(0x43, 0x00);
+    const count = pit.read(0x40) | (pit.read(0x40) << 8);
+    expect(count).toBeGreaterThan(0);
+    expect(count).toBeLessThanOrEqual(0xffff);
+  });
+
+
   it('runs mode 3 at the programmed rate and mode 2 as a rate generator', () => {
     const pit = new Pit8254();
     const edges: number[] = [];
@@ -266,6 +285,31 @@ describe('PC and XT keyboard interface (8255)', () => {
   });
 });
 
+describe('Model 25 and 30 gate array', () => {
+  it('raises the diagnostic NMI from port 63h when port 69h allows it', async () => {
+    const { GateArray } = await import('../src/chips/gate-array');
+    const { Ps2Mouse } = await import('../src/io/ps2-mouse');
+    let nmis = 0;
+    const irqs: string[] = [];
+    const ga = new GateArray(new Ps2Keyboard(), new Ps2Mouse(), {
+      setIrq: (line, high) => irqs.push(`${line}${high ? '+' : '-'}`),
+      picIcw: () => 0x08,
+      portBChanged: () => {},
+      timer2Output: () => false,
+      nmi: () => nmis++,
+    });
+    ga.write(0x63, 0x01);
+    expect(nmis).toBe(0);
+    ga.write(0x63, 0x00);
+    ga.write(0x69, 0x84);
+    ga.write(0x63, 0x05);
+    expect(nmis).toBe(1);
+    expect(irqs).toEqual(['2+']);
+    ga.write(0x69, 0x00);
+    expect(irqs).toEqual(['2+', '2-']);
+  });
+});
+
 describe('floppy controller', () => {
   function setup(disk: FloppyImage) {
     const memory = new Uint8Array(1 << 20);
@@ -324,6 +368,65 @@ describe('floppy controller', () => {
     command(0x4a, 0x00);
     run();
     expect(results().slice(0, 2)).toEqual([0x40, 0x01]);
+  });
+
+  it("keeps the DIR's own bits with the motors off", () => {
+    const { fdc } = setup(new FloppyImage(formattedDisk(), 'test'));
+    fdc.write(0x3f2, 0x08);
+    fdc.write(0x3f7, 0x06);
+    expect(fdc.read(0x3f7)).toBe(0x0e);
+  });
+
+  it('shows the head, the read data line and writes in the PS/2 status registers', () => {
+    const disk = new FloppyImage(formattedDisk(), 'test');
+    const { fdc, dma, run, command, results } = setup(disk);
+    fdc.write(0x3f2, 0x1c);
+    command(0x0f, 0x04, 0);
+    run();
+    command(0x08);
+    results();
+    // Head 1 selected: SRA's bit 3 (head select, active low) clears.
+    expect(fdc.read(0x3f0) & 0x08).toBe(0);
+    expect(fdc.read(0x3f1) & 0x1c).toBe(0x08);
+    dma.write(0x0b, 0x4a);
+    dma.write(0x05, 0xff);
+    dma.write(0x05, 0x01);
+    dma.write(0x0a, 0x02);
+    command(0xc5, 0x04, 0, 1, 1, 2, 18, 0x1b, 0xff);
+    run();
+    results();
+    // A write latches SRB's write enable and write data bits until it is read.
+    expect(fdc.read(0x3f1) & 0x14).toBe(0x14);
+    expect(fdc.read(0x3f1) & 0x14).toBe(0);
+  });
+
+  it('finds sectors by the numbers a track was formatted with', () => {
+    const disk = new FloppyImage(formattedDisk(), 'test');
+    const { fdc, dma, memory, run, command, results } = setup(disk);
+    fdc.write(0x3f2, 0x1c);
+    // FORMAT track 0 with sectors numbered 51h-62h, from IDs at 2000h.
+    for (let i = 0; i < 18; i++) memory.set([0, 0, 0x51 + i, 2], 0x2000 + i * 4);
+    dma.write(0x0b, 0x4a);
+    dma.write(0x04, 0x00);
+    dma.write(0x04, 0x20);
+    dma.write(0x05, 71);
+    dma.write(0x05, 0);
+    dma.write(0x0a, 0x02);
+    command(0x4d, 0x00, 2, 18, 0x54, 0xe5);
+    run();
+    results();
+    expect(disk.offset(0, 0, 1)).toBe(-1);
+    // Reading 51h-52h goes past EOT (12h): the track goes on to the next numbers.
+    dma.write(0x0b, 0x46);
+    dma.write(0x04, 0x00);
+    dma.write(0x04, 0x10);
+    dma.write(0x05, 0xff);
+    dma.write(0x05, 0x03);
+    dma.write(0x0a, 0x02);
+    command(0xe6, 0x00, 0, 0, 0x51, 2, 18, 0x1b, 0xff);
+    run();
+    expect(results()).toEqual([0x00, 0x00, 0x00, 0, 0, 0x53, 2]);
+    expect(memory[0x1000]).toBe(0xe5);
   });
 
   it('reports the disk change line through the DIR, active low', () => {

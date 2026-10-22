@@ -1,3 +1,5 @@
+import type { InstructionShape, Timing } from './timing';
+
 /** What the 80286 sees of the machine: 16 MB of memory on 24 address lines, and 64K I/O ports. */
 export interface CpuBus {
   read8(address: number): number;
@@ -153,10 +155,14 @@ export class I286 {
    * no faults but the divide error, 20 address lines, and the 8086's quirks.
    */
   is8086 = false;
-  /** How much longer each instruction takes than on the 286 (the 8088's slower bus and address arithmetic). */
+  /** How much longer each instruction takes than its count (the table's or the 286's): the machine's bus and wait states. */
   cycleScale = 1;
+  /** Clocks measured from the real chip, used in place of the 286's documented counts. */
+  timing: Timing | null = null;
   /** Clock cycles run since power on. */
   cycles = 0;
+  /** Wait states the bus adds during an instruction (I/O recovery), on top of its clocks. */
+  waitCycles = 0;
   /** Interrupts wait an instruction after STI, MOV SS and POP SS. */
   private inhibit = false;
   private startIp = 0;
@@ -168,6 +174,12 @@ export class I286 {
   private stringWrite = false;
   /** 0 for none, 1 for REPNE, 2 for REP/REPE. */
   private rep = 0;
+  /** The shape of the instruction being run, for its timing. */
+  private shapeOp = 0;
+  private shapeModrm = false;
+  private shapeCount = 0;
+  private fetchedBytes = 0;
+  private startCs = 0;
   private mod = 0;
   private regField = 0;
   private rm = 0;
@@ -357,6 +369,7 @@ export class I286 {
 
   private fetch8(): number {
     const ip = this.ip;
+    this.fetchedBytes++;
     if (this.is8086) {
       this.ip = (ip + 1) & 0xffff;
       return this.bus.read8((this.segBase[Seg.CS] + ip) & 0xfffff);
@@ -393,6 +406,7 @@ export class I286 {
 
   private modrm(): void {
     const byte = this.fetch8();
+    this.shapeModrm = true;
     this.mod = byte >> 6;
     this.regField = (byte >> 3) & 7;
     this.rm = byte & 7;
@@ -810,6 +824,7 @@ export class I286 {
       }
       // CX counts down before the element is touched (CMPS counts it between its two reads).
       if (!countsItself) r[Reg.CX]--;
+      this.shapeCount++;
       this.stringWrite = false;
       try {
         body();
@@ -848,16 +863,42 @@ export class I286 {
 
   // --- Running -------------------------------------------------------------------------
 
+  /** Whether the instruction last run went somewhere other than the next one. */
+  private get branched(): boolean {
+    return this.sreg[Seg.CS] !== this.startCs || this.ip !== ((this.startIp + this.fetchedBytes) & 0xffff);
+  }
+
+  /** The shape of the instruction last run, for its timing. */
+  get lastShape(): InstructionShape {
+    return {
+      op: this.shapeOp,
+      reg: this.regField,
+      memory: this.shapeModrm && this.mod !== 3,
+      branched: this.branched,
+      repeated: this.rep !== 0,
+      count: this.shapeCount,
+    };
+  }
+
   /** Runs one instruction (or takes the exception it raises). */
   step(): void {
     this.startIp = this.ip;
     this.startSp = this.regs[Reg.SP];
+    this.startCs = this.sreg[Seg.CS];
     const trap = this.tf;
     const startCycles = this.cycles;
     this.inhibit = false;
+    this.shapeModrm = false;
+    this.shapeCount = 0;
+    this.fetchedBytes = 0;
+    this.waitCycles = 0;
     try {
       this.execute();
-      if (this.cycleScale !== 1) this.cycles = startCycles + (this.cycles - startCycles) * this.cycleScale;
+      const measured = this.timing
+        ? this.timing.clocks(this.shapeOp, this.regField, this.shapeModrm && this.mod !== 3, this.branched, this.rep !== 0, this.shapeCount)
+        : -1;
+      if (measured >= 0) this.cycles = startCycles + measured * this.cycleScale + this.waitCycles;
+      else if (this.cycleScale !== 1) this.cycles = startCycles + (this.cycles - startCycles - this.waitCycles) * this.cycleScale + this.waitCycles;
     } catch (error) {
       if (!(error instanceof CpuFault)) throw error;
       // The 8086's divide error returns to the next instruction.
@@ -948,6 +989,7 @@ export class I286 {
       this.cycles++;
       op = this.fetch8();
     }
+    this.shapeOp = op;
     if (this.is8086) {
       // The 286's new opcodes are the 8086's aliases: jumps for 60h-6Fh, returns for C0h, C1h, C8h and C9h.
       if (op >= 0x60 && op <= 0x6f) op += 0x10;
@@ -1473,6 +1515,7 @@ export class I286 {
         this.modrm();
         const value = this.readE8();
         const count = op === 0xc0 ? this.fetch8() : op === 0xd0 ? 1 : r[Reg.CX] & 0xff;
+        this.shapeCount = this.is8086 ? count : count & 0x1f;
         this.writeE8(this.shift(this.regField, value, count, 8));
         this.cycles += this.mod === 3 ? 5 : 8;
         return;
@@ -1483,6 +1526,7 @@ export class I286 {
         this.modrm();
         const value = this.readE16();
         const count = op === 0xc1 ? this.fetch8() : op === 0xd1 ? 1 : r[Reg.CX] & 0xff;
+        this.shapeCount = this.is8086 ? count : count & 0x1f;
         this.writeE16(this.shift(this.regField, value, count, 16));
         this.cycles += this.mod === 3 ? 5 : 8;
         return;

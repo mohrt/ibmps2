@@ -234,7 +234,8 @@ class Counter {
             tick += left + 1;
             ticks -= left + 1;
           } else {
-            this.count -= ticks;
+            // A count of 0 is 65536.
+            this.count = (this.count - ticks + 0x10000) & 0xffff;
             return;
           }
           break;
