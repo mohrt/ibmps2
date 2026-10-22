@@ -12,3 +12,5 @@ dist/
 *.vfd
 public/games/
 tests/fixtures/80286/
+
+tests/fixtures/8088/

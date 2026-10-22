@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { FloppyImage, formattedDisk, geometryForSize } from '../src/drive/floppy-image';
-import { BIOS_BYTES, identifyBios, joinSplitBios, rankBioses } from '../src/roms/system-roms';
+import { RomLibrary, type StoredRom } from '../src/roms/rom-library';
 import { changedSectors } from '../src/storage/disk-saves';
+import { MemoryStore } from '../src/storage/store';
 import { ROMS, hasRom } from './helpers/machine';
 
 describe('floppy images', () => {
@@ -33,35 +34,78 @@ describe('floppy images', () => {
   });
 });
 
-/** A made-up 128K ROM that ends with the reset jump a PC BIOS has. */
-function fakeBios(): Uint8Array {
-  const rom = new Uint8Array(BIOS_BYTES).fill(0x90);
-  rom.set([0xea, 0x5b, 0xe0, 0x00, 0xf0], BIOS_BYTES - 16);
+/** A made-up ROM that ends with the reset jump a PC BIOS has. */
+function fakeBios(size = 0x20000, fill = 0x90): Uint8Array {
+  const rom = new Uint8Array(size).fill(fill);
+  rom.set([0xea, 0x5b, 0xe0, 0x00, 0xf0], size - 16);
   return rom;
 }
 
-describe('BIOS ROMs', () => {
-  it('accept other PC BIOSes with a warning, and turn away other files', () => {
-    const rom = identifyBios('other.bin', fakeBios());
-    expect(rom.warning).toMatch(/may not start/);
-    expect(() => identifyBios('small.bin', new Uint8Array(0x8000))).toThrow(/131,072-byte/);
-    expect(() => identifyBios('data.bin', new Uint8Array(BIOS_BYTES))).toThrow(/doesn't end like a PC BIOS/);
+describe('the ROM library', () => {
+  it('takes another BIOS of the right size with a warning, and turns away other files', async () => {
+    const library = new RomLibrary(new MemoryStore());
+    const problems = await library.add(
+      [
+        { name: 'other.bin', data: fakeBios() },
+        { name: 'small.bin', data: new Uint8Array(0x8000) },
+      ],
+      'm30-286',
+    );
+    expect(problems).toEqual(["small.bin isn't a ROM for this machine."]);
+    expect((await library.assemble('m30-286'))?.warning).toMatch(/may not start/);
+    expect(await library.assemble('pc-at')).toBeNull();
   });
 
-  it('put a ROM dumped from its two chips back together, and trim overdumps', () => {
-    const rom = fakeBios();
-    const even = rom.filter((_, i) => i % 2 === 0);
-    const odd = rom.filter((_, i) => i % 2 === 1);
-    expect(joinSplitBios(odd, even)).toEqual(rom);
-    const doubled = new Uint8Array(BIOS_BYTES * 2);
+  it("doesn't guess which of a collection's BIOSes is meant", async () => {
+    const library = new RomLibrary(new MemoryStore());
+    const problems = await library.add(
+      [
+        { name: 'a/bios.bin', data: fakeBios(0x10000, 1) },
+        { name: 'b/bios.bin', data: fakeBios(0x10000, 2) },
+      ],
+      'pc-xt',
+    );
+    expect(problems[0]).toMatch(/add just the one/);
+    expect(await library.assemble('pc-xt')).toBeNull();
+  });
+
+  it('keeps the BIOS that earlier versions stored', async () => {
+    const store = new MemoryStore<StoredRom>();
+    await store.put('bios', { name: 'mine.bin', data: fakeBios() });
+    const library = new RomLibrary(store);
+    await library.adoptEarlierRoms();
+    expect((await library.assemble('m30-286'))?.sources).toEqual(['mine.bin']);
+    expect((await store.entries()).map(([key]) => key)).toEqual(['custom-m30-286']);
+  });
+
+  it.skipIf(!hasRom(ROMS.rev2) || !hasRom(ROMS.rev0))("prefers the newer of IBM's two Model 30 286 BIOSes", async () => {
+    const library = new RomLibrary(new MemoryStore());
+    await library.add(
+      [ROMS.rev0, ROMS.rev2].map((path) => ({ name: path, data: new Uint8Array(readFileSync(path)) })),
+      'm30-286',
+    );
+    const rom = await library.assemble('m30-286');
+    expect(rom?.warning).toBeNull();
+    expect(rom?.title).toMatch(/revision 2/);
+    expect((await library.assemble('m25-286'))?.title).toMatch(/revision 2/);
+  });
+
+  it.skipIf(!hasRom(ROMS.rev2))('puts the BIOS back together from its two chips, and trims overdumps', async () => {
+    const rom = new Uint8Array(readFileSync(ROMS.rev2));
+    const halves = new RomLibrary(new MemoryStore());
+    await halves.add(
+      [
+        { name: 'even.bin', data: rom.filter((_, i) => i % 2 === 0) },
+        { name: 'odd.bin', data: rom.filter((_, i) => i % 2 === 1) },
+      ],
+      'm30-286',
+    );
+    expect((await halves.assemble('m30-286'))?.image).toEqual(rom);
+    const doubled = new Uint8Array(rom.length * 2);
     doubled.set(rom);
-    doubled.set(rom, BIOS_BYTES);
-    expect(identifyBios('over.bin', doubled).data.length).toBe(BIOS_BYTES);
-  });
-
-  it.skipIf(!hasRom(ROMS.rev2) || !hasRom(ROMS.rev0))("know IBM's two Model 30 286 BIOSes, newest first", () => {
-    const roms = [ROMS.rev0, ROMS.rev2].map((path) => identifyBios(path, new Uint8Array(readFileSync(path))));
-    expect(roms.every((rom) => rom.warning === null)).toBe(true);
-    expect(rankBioses(roms)[0].title).toMatch(/revision 2/);
+    doubled.set(rom, rom.length);
+    const over = new RomLibrary(new MemoryStore());
+    expect(await over.add([{ name: 'over.bin', data: doubled }], 'm30-286')).toEqual([]);
+    expect((await over.assemble('m30-286'))?.warning).toBeNull();
   });
 });

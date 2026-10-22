@@ -1,13 +1,13 @@
 import { isZip, readZip } from '../drive/zip';
-import type { MemorySize } from '../ps2';
-import { BIOS_BYTES, identifyBios, isHalfBios, joinSplitBios, rankBioses, type Bios, type SystemRomStore } from '../roms/system-roms';
+import { MODELS, memoryLabel, modelSpec, type ModelId, type ModelSpec } from '../models';
+import { ROM_SIZES, type AssembledRom, type RomLibrary } from '../roms/rom-library';
 
-/** Files worth looking at in a zip: BIOS-sized (whole, half or an overdump), or another zip. */
+/** Files worth looking at in a zip: ROM-sized, or another zip. */
 function interesting(name: string, size: number): boolean {
   const base = name.split('/').pop()!;
   if (base.startsWith('.') || name.startsWith('__MACOSX/')) return false;
   if (base.toLowerCase().endsWith('.zip')) return true;
-  return size === BIOS_BYTES || size === BIOS_BYTES / 2 || size === BIOS_BYTES * 2;
+  return ROM_SIZES.has(size);
 }
 
 /** ROM collections often hold a zip per machine, so zips are opened this many levels down. */
@@ -23,7 +23,7 @@ async function expand(file: File, depth = 0): Promise<File[]> {
     // Keep the folder in the name: a ROM collection's machines are told apart by it.
     files.push(...(await expand(new File([new Uint8Array(await entry.read())], entry.name), depth + 1)));
   }
-  if (depth === 0 && files.length === 0) throw new Error(`${file.name} has no BIOS ROM in it.`);
+  if (depth === 0 && files.length === 0) throw new Error(`${file.name} has no ROM in it.`);
   return files;
 }
 
@@ -35,11 +35,44 @@ function summarise(errors: string[]): string {
 
 /** How the machine is built; changing any of it means switching off and on. */
 export interface MachineChoices {
-  memory: MemorySize;
+  model: ModelId;
+  /** In KB. */
+  memory: number;
   secondDrive: boolean;
 }
 
-export const DEFAULT_CHOICES: MachineChoices = { memory: 2, secondDrive: false };
+export const DEFAULT_CHOICES: MachineChoices = { model: 'm30-286', memory: 2048, secondDrive: false };
+
+/** Choices as remembered, made sense of: earlier versions had only the Model 30 286, with its memory in MB. */
+export function readChoices(stored: { model?: string; memory?: number; secondDrive?: boolean }): MachineChoices {
+  const model = modelSpec(stored.model);
+  let memory = Number(stored.memory) || 0;
+  if (!stored.model && memory > 0 && memory <= 16) memory *= 1024;
+  return {
+    model: model.id,
+    memory: model.memoryChoices.includes(memory) ? memory : model.defaultMemory,
+    secondDrive: stored.secondDrive === true,
+  };
+}
+
+/** A machine's ROM image and the extra ROMs it needs, ready to load. */
+export interface MachineRoms {
+  rom: AssembledRom;
+  extras: Map<string, AssembledRom>;
+}
+
+/** The ROMs for a model, or null if any are missing. */
+export async function romsFor(library: RomLibrary, model: ModelSpec): Promise<MachineRoms | null> {
+  const rom = await library.assemble(model.id);
+  if (!rom) return null;
+  const extras = new Map<string, AssembledRom>();
+  for (const name of model.extraRoms) {
+    const extra = await library.assemble(name);
+    if (!extra) return null;
+    extras.set(name, extra);
+  }
+  return { rom, extras };
+}
 
 export interface MachineSetupOptions {
   /** Opened from a running machine: offers Back (resolves null) and restarts rather than starts. */
@@ -48,24 +81,28 @@ export interface MachineSetupOptions {
 }
 
 export interface MachineSetup {
-  bios: Bios;
   choices: MachineChoices;
+  roms: MachineRoms;
 }
 
+const EXTRA_NAMES: Record<string, string> = { 'cga-font': 'character ROM' };
+const fileName = (path: string) => path.split('/').pop()!;
+
 /**
- * Shows Machine setup in place of the screen: the BIOS (asked for on the
- * first visit), the memory and the second floppy drive. Resolves when the
- * user starts or restarts the PS/2, or with null if they went back to the
- * running machine instead (which changes nothing but the ROM kept in the
+ * Shows Machine setup in place of the screen: the model, its ROMs (asked for
+ * on the first visit), the memory and the second floppy drive. Resolves when
+ * the user starts or restarts the machine, or with null if they went back to
+ * the running one instead (which changes nothing but the ROMs kept in the
  * browser).
  */
-export function askForMachine(root: HTMLElement, store: SystemRomStore, initial: Bios | null, options: MachineSetupOptions): Promise<MachineSetup | null> {
+export function askForMachine(root: HTMLElement, library: RomLibrary, options: MachineSetupOptions): Promise<MachineSetup | null> {
   const query = <T extends HTMLElement>(selector: string) => {
     const element = root.querySelector<T>(selector);
     if (!element) throw new Error(`Machine setup is missing ${selector}`);
     return element;
   };
   const fileInput = query<HTMLInputElement>('input[name="rom-files"]');
+  const modelSelect = query<HTMLSelectElement>('select[name="model"]');
   const memorySelect = query<HTMLSelectElement>('select[name="memory"]');
   const secondDrive = query<HTMLInputElement>('input[name="second-drive"]');
   const startButton = query<HTMLButtonElement>('[data-action="start"]');
@@ -74,44 +111,64 @@ export function askForMachine(root: HTMLElement, store: SystemRomStore, initial:
   const message = query<HTMLElement>('.rom-message');
   const heading = query<HTMLElement>('h1');
   const row = query<HTMLElement>('[data-rom="bios"]');
+  const romTitle = row.querySelector<HTMLElement>('.rom-title')!;
+  const romDetail = row.querySelector<HTMLElement>('.rom-detail')!;
   const status = row.querySelector<HTMLElement>('.rom-status')!;
-  const choiceRow = query<HTMLElement>('.rom-choice');
-  const choiceSelect = query<HTMLSelectElement>('select[name="bios-choice"]');
-  heading.textContent = options.whileRunning ? 'Machine setup' : 'First, load the PS/2 BIOS';
-  startButton.textContent = options.whileRunning ? 'Restart the PS/2 with these settings' : 'Switch the PS/2 on';
-  memorySelect.value = String(options.choices.memory);
-  secondDrive.checked = options.choices.secondDrive;
+  heading.textContent = options.whileRunning ? 'Machine setup' : 'First, load the ROMs';
   backButton.hidden = !options.whileRunning;
+  secondDrive.checked = options.choices.secondDrive;
   message.textContent = '';
-  let bios = initial;
-  /** One half of a BIOS dumped from its two chips, waiting for the other. */
-  let half: File | null = null;
-  /** The BIOSes to switch between, when several came together (best first). */
-  let choices: Bios[] = [];
+  let model = modelSpec(options.choices.model);
+  let memory = options.choices.memory;
+  let roms: MachineRoms | null = null;
+  /** The models whose ROMs are all here. */
+  let ready = new Set<string>();
   const listeners = new AbortController();
 
-  const render = () => {
-    row.dataset.state = bios ? (bios.warning ? 'warning' : 'loaded') : 'missing';
-    status.textContent = bios
-      ? `Loaded: ${bios.title}, from ${bios.name.split('/').pop()}${bios.warning ? ` (${bios.warning})` : ''}`
-      : 'Not loaded yet';
-    startButton.disabled = !bios;
-    forgetButton.hidden = !bios;
-    choiceRow.hidden = choices.length < 2;
-    choiceSelect.replaceChildren(
-      ...choices.map((choice, i) => {
+  const fillMemory = () => {
+    if (!model.memoryChoices.includes(memory)) memory = model.defaultMemory;
+    memorySelect.replaceChildren(
+      ...model.memoryChoices.map((kilobytes) => {
         const option = document.createElement('option');
-        option.value = String(i);
-        option.textContent = choice.title;
-        option.selected = !!bios && choice.title === bios.title && choice.data.length === bios.data.length;
+        option.value = String(kilobytes);
+        option.textContent = memoryLabel(kilobytes);
+        option.selected = kilobytes === memory;
         return option;
       }),
     );
   };
 
-  const use = async (rom: Bios) => {
-    bios = rom;
-    await store.save(rom);
+  const render = () => {
+    modelSelect.replaceChildren(
+      ...MODELS.map((spec) => {
+        const option = document.createElement('option');
+        option.value = spec.id;
+        option.textContent = `${spec.name}, ${spec.year}${ready.has(spec.id) ? '' : ' (ROMs needed)'}`;
+        option.selected = spec.id === model.id;
+        return option;
+      }),
+    );
+    romTitle.textContent = `${model.name} ROMs`;
+    romDetail.textContent = model.romHint;
+    row.dataset.state = roms ? (roms.rom.warning ? 'warning' : 'loaded') : 'missing';
+    if (roms) {
+      const extras = [...roms.extras.entries()].map(([name, extra]) => `the ${EXTRA_NAMES[name] ?? name} from ${fileName(extra.sources[0])}`);
+      const from = [roms.rom.sources.map(fileName).join(' and '), ...extras].join(', ');
+      status.textContent = `Loaded: ${roms.rom.title}, from ${from}${roms.rom.warning ? ` (${roms.rom.warning})` : ''}`;
+    } else {
+      status.textContent = 'Not loaded yet';
+    }
+    const machine = model.name.replace(/^IBM /, '');
+    startButton.textContent = options.whileRunning ? `Restart as the ${machine}` : `Switch the ${machine} on`;
+    startButton.disabled = !roms;
+    forgetButton.hidden = ready.size === 0;
+  };
+
+  const refresh = async () => {
+    const available = await library.available();
+    ready = new Set(MODELS.filter((spec) => available.has(spec.id) && spec.extraRoms.every((name) => available.has(name))).map((spec) => spec.id));
+    roms = await romsFor(library, model);
+    render();
   };
 
   const addFiles = async (chosen: File[]) => {
@@ -124,51 +181,24 @@ export function askForMachine(root: HTMLElement, store: SystemRomStore, initial:
         errors.push(error instanceof Error ? error.message : String(error));
       }
     }
-    const found: Bios[] = [];
-    for (const file of files) {
-      const data = new Uint8Array(await file.arrayBuffer());
-      try {
-        if (isHalfBios(data)) {
-          if (!half) {
-            half = file;
-            errors.push(`${file.name} looks like half of a BIOS dumped from its two chips; add the other half too.`);
-            continue;
-          }
-          const joined = joinSplitBios(new Uint8Array(await half.arrayBuffer()), data);
-          if (!joined) throw new Error(`${half.name} and ${file.name} don't make a BIOS together.`);
-          found.push(identifyBios(`${half.name} + ${file.name}`, joined));
-          half = null;
-          continue;
-        }
-        found.push(identifyBios(file.name, data));
-      } catch (error) {
-        errors.push(error instanceof Error ? error.message : String(error));
-      }
-    }
-    if (found.length > 0) {
-      // In a collection, the other machines' ROMs don't matter once one fits.
-      choices = rankBioses(found);
-      await store.saveChoices(choices.length > 1 ? choices : []);
-      await use(choices[0]);
-      half = null;
-      errors.length = 0;
-    }
-    message.textContent = summarise(errors);
-    render();
+    const given = await Promise.all(files.map(async (file) => ({ name: file.name, data: new Uint8Array(await file.arrayBuffer()) })));
+    errors.push(...(await library.add(given, model.id)));
+    await refresh();
+    // In a collection, the files for other machines don't matter once this one's are here.
+    message.textContent = given.length > 0 && ready.has(model.id) ? '' : summarise(errors);
   };
 
-  choiceSelect.addEventListener(
+  modelSelect.addEventListener(
     'change',
     () => {
-      const choice = choices[Number(choiceSelect.value)];
-      if (choice) void use(choice).then(render);
+      model = modelSpec(modelSelect.value);
+      fillMemory();
+      message.textContent = '';
+      void refresh();
     },
     { signal: listeners.signal },
   );
-  void store.loadChoices().then((stored) => {
-    choices = stored;
-    render();
-  });
+  memorySelect.addEventListener('change', () => (memory = Number(memorySelect.value)), { signal: listeners.signal });
 
   root.querySelectorAll<HTMLButtonElement>('[data-action="choose-roms"]').forEach((button) =>
     button.addEventListener('click', () => fileInput.click(), { signal: listeners.signal }),
@@ -185,11 +215,8 @@ export function askForMachine(root: HTMLElement, store: SystemRomStore, initial:
   forgetButton.addEventListener(
     'click',
     () => {
-      bios = null;
-      half = null;
-      choices = [];
       message.textContent = '';
-      void store.forget().then(render);
+      void library.forget().then(refresh);
     },
     { signal: listeners.signal },
   );
@@ -244,7 +271,9 @@ export function askForMachine(root: HTMLElement, store: SystemRomStore, initial:
 
   document.body.classList.add('needs-roms');
   root.hidden = false;
+  fillMemory();
   render();
+  void refresh();
   root.scrollIntoView({ block: 'start' });
 
   return new Promise((resolve) => {
@@ -254,14 +283,10 @@ export function askForMachine(root: HTMLElement, store: SystemRomStore, initial:
       document.body.classList.remove('needs-roms');
       resolve(result);
     };
-    const current = (): MachineChoices => ({
-      memory: (Number(memorySelect.value) || 2) as MemorySize,
-      secondDrive: secondDrive.checked,
-    });
     startButton.addEventListener(
       'click',
       () => {
-        if (bios) close({ bios, choices: current() });
+        if (roms) close({ choices: { model: model.id, memory, secondDrive: secondDrive.checked }, roms });
       },
       { signal: listeners.signal },
     );

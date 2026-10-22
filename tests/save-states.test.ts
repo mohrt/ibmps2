@@ -28,6 +28,6 @@ describe.skipIf(!hasRom(ROMS.rev2) || !existsSync(freedos))('save states', () =>
     restored.loadState(session.machine);
     typeText(restored, 'ver\n');
     runSeconds(restored, 2);
-    expect(screenText(restored.vga)).toContain('FreeCom version');
+    expect(screenText(restored.video)).toContain('FreeCom version');
   });
 });

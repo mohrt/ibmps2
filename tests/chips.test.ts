@@ -5,8 +5,10 @@ import { Fdc } from '../src/chips/fdc';
 import { Kbc8042 } from '../src/chips/kbc8042';
 import { Pic8259 } from '../src/chips/pic8259';
 import { Pit8254 } from '../src/chips/pit8254';
+import { Ppi8255 } from '../src/chips/ppi8255';
 import { Rtc146818 } from '../src/chips/rtc146818';
 import { FloppyImage, formattedDisk } from '../src/drive/floppy-image';
+import { Ps2Keyboard } from '../src/io/ps2-keyboard';
 
 /** Programs a pair of PICs the way the BIOS does: vectors 08h and 70h, cascade on IRQ 2. */
 function biosPics(): [Pic8259, Pic8259] {
@@ -209,6 +211,58 @@ describe('keyboard controller', () => {
     kbc.mouse.left = true;
     expect(readAll(kbc)).toEqual([0x29, 5, 0xfd]);
     expect(kbc.read(0x64) & 0x20).toBe(0x20);
+  });
+});
+
+describe('PC and XT keyboard interface (8255)', () => {
+  function xt() {
+    const irq: boolean[] = [];
+    const ppi = new Ppi8255(new Ps2Keyboard(), { setIrq: (high) => irq.push(high), portBChanged: () => {}, timer2Output: () => false }, false);
+    ppi.configure(false, 1, 640);
+    return { ppi, irq };
+  }
+
+  it('resets the keyboard when its clock is let go, even with the acknowledge bit set', () => {
+    const { ppi, irq } = xt();
+    ppi.write(0x61, 0x08);
+    ppi.write(0x61, 0xc8);
+    ppi.advance(0.01);
+    expect(ppi.full).toBe(false);
+    ppi.write(0x61, 0x48);
+    ppi.advance(0.01);
+    expect(ppi.read(0x60)).toBe(0xaa);
+    expect(irq.at(-1)).toBe(true);
+    // Acknowledged, the register reads 0: no key is stuck down.
+    ppi.write(0x61, 0xc8);
+    ppi.write(0x61, 0x48);
+    ppi.advance(0.01);
+    expect(ppi.read(0x60)).toBe(0);
+  });
+
+  it('sends set 1 codes, with the arrows as the number pad', () => {
+    const { ppi } = xt();
+    ppi.write(0x61, 0x48);
+    const codes: number[] = [];
+    ppi.keyboard.press('KeyA');
+    ppi.keyboard.release('KeyA');
+    ppi.keyboard.press('ArrowUp');
+    for (let i = 0; i < 4; i++) {
+      ppi.advance(0.01);
+      codes.push(ppi.read(0x60));
+      ppi.write(0x61, 0xc8);
+      ppi.write(0x61, 0x48);
+    }
+    // Starting its clock resets the keyboard, which answers AA first.
+    expect(codes).toEqual([0xaa, 0x1e, 0x9e, 0x48]);
+  });
+
+  it('reads the switches a nibble at a time', () => {
+    const { ppi } = xt();
+    // One drive, an 80-column colour card and 256K on the planar: 2Dh.
+    ppi.write(0x61, 0x08);
+    expect(ppi.read(0x62) & 0x0f).toBe(0x02);
+    ppi.write(0x61, 0x00);
+    expect(ppi.read(0x62) & 0x0f).toBe(0x0d);
   });
 });
 

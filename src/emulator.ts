@@ -1,22 +1,23 @@
-import { CPU_HZ, Ps2 } from './ps2';
+import { Machine } from './machine';
 import type { Screen } from './render/screen';
 
 /** Longest gap we catch up on, so a backgrounded tab doesn't run a burst of frames. */
 const MAX_CATCH_UP_MS = 100;
 /** While warping, each animation frame emulates for this long. */
 const WARP_BUDGET_MS = 14;
-const WARP_STEP = CPU_HZ / 200;
+/** While warping, the machine runs in steps of this many seconds. */
+const WARP_STEP_SECONDS = 1 / 200;
 
 /** Glues the PS/2 to the screen and the speaker, and runs it in step with real time. */
 export class Emulator {
-  readonly machine = new Ps2();
+  readonly machine = new Machine();
   /** Run flat out through the power-on self test. */
   fastStartup = true;
   private clockDebt = 0;
   private warping = false;
 
   constructor(screen: Screen) {
-    this.machine.vga.onFrame = (framebuffer, width, height) => screen.capture(framebuffer, width, height);
+    this.machine.onFrame = (framebuffer, width, height) => screen.capture(framebuffer, width, height);
   }
 
   get warped(): boolean {
@@ -34,11 +35,11 @@ export class Emulator {
     this.warping = this.fastStartup && machine.starting;
     if (this.warping) {
       const stopAt = performance.now() + WARP_BUDGET_MS;
-      while (performance.now() < stopAt && machine.starting) machine.run(WARP_STEP);
+      while (performance.now() < stopAt && machine.starting) machine.run(machine.cpuHz * WARP_STEP_SECONDS);
       this.clockDebt = 0;
       return;
     }
-    this.clockDebt += (Math.min(elapsedMs, MAX_CATCH_UP_MS) * CPU_HZ) / 1000;
+    this.clockDebt += (Math.min(elapsedMs, MAX_CATCH_UP_MS) * machine.cpuHz) / 1000;
     const start = machine.cpu.cycles;
     machine.run(Math.floor(this.clockDebt));
     this.clockDebt -= machine.cpu.cycles - start;

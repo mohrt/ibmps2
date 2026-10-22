@@ -34,13 +34,16 @@ export interface KbcHost {
 }
 
 /**
- * The 8042 keyboard controller at 60h and 64h, running IBM's PS/2 firmware:
- * the keyboard and the auxiliary (mouse) port, the command byte, translation
- * of scan code set 2 to set 1, and the output port's A20 gate and CPU reset.
+ * The 8042 keyboard controller at 60h and 64h, running IBM's PS/2 firmware
+ * (or the AT's, which has no auxiliary port): the keyboard and the mouse, the
+ * command byte, translation of scan code set 2 to set 1, and the output
+ * port's A20 gate and CPU reset.
  */
 export class Kbc8042 {
   readonly keyboard = new Ps2Keyboard();
   readonly mouse = new Ps2Mouse();
+  /** The PS/2 firmware's auxiliary (mouse) port; the AT's firmware has none. */
+  hasAux = true;
   readonly ram = new Uint8Array(32);
   status = 0;
   outputBuffer = 0;
@@ -170,6 +173,7 @@ export class Kbc8042 {
       if (!(value & 1)) this.host.resetCpu();
       return;
     }
+    if (!this.hasAux && [0xa7, 0xa8, 0xa9, 0xd3, 0xd4].includes(value)) return;
     switch (value) {
       case 0xa4:
         this.reply(0xf1);
@@ -232,6 +236,7 @@ export class Kbc8042 {
 
   /** Runs for `seconds`: bytes from the keyboard and mouse arrive one at a time. */
   advance(seconds: number): void {
+    this.keyboard.advance(seconds);
     this.mouse.advance(seconds);
     this.deliver();
     this.wait -= seconds;
@@ -249,7 +254,7 @@ export class Kbc8042 {
       }
     }
     const mouse = this.mouse.output;
-    if (!(ccb & Ccb.AuxDisabled) && mouse.length > 0) {
+    if (this.hasAux && !(ccb & Ccb.AuxDisabled) && mouse.length > 0) {
       this.fill(mouse.shift()!, true);
       this.wait = BYTE_SECONDS;
     }

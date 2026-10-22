@@ -172,6 +172,11 @@ export class Dma8237 {
     return true;
   }
 
+  /** The PC's and XT's memory refresh: timer 1 requests a read on channel 0 for each of `transfers`. */
+  refresh(transfers: number): void {
+    for (let i = 0; i < transfers && !this.channels[0].masked; i++) this.step(0);
+  }
+
   /** A device writes a byte to memory on an 8-bit channel; returns true at terminal count. */
   writeByte(index: number, value: number): boolean {
     const channel = this.channels[index];

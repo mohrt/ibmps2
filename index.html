@@ -19,77 +19,72 @@
   <body>
     <main>
       <div class="screen-frame">
-        <canvas id="screen" width="720" height="400" tabindex="0" aria-label="PS/2 screen"></canvas>
+        <canvas id="screen" width="720" height="400" tabindex="0" aria-label="Screen"></canvas>
         <p class="paused-label">Paused</p>
         <p class="mouse-label">Click the screen to use the mouse; Esc lets it go</p>
         <section id="rom-setup" class="rom-setup" aria-labelledby="rom-setup-title" hidden>
-          <h1 id="rom-setup-title">First, load the PS/2 BIOS</h1>
+          <h1 id="rom-setup-title">First, load the ROMs</h1>
           <p class="rom-setup-lead">
-            The PS/2 can't switch on without its BIOS, IBM's program in its ROM chips. It is still under copyright, so
-            it isn't included here: choose or drop your own copy. It stays in this browser and is never sent anywhere.
-            The browser remembers it, so you only need to do this once.
-          </p>
-          <ul class="rom-list">
-            <li data-rom="bios">
-              <p class="rom-heading"><strong>Model 30 286 BIOS</strong> <span class="rom-need">Required</span></p>
-              <p class="rom-detail">
-                The ROM of the PS/2 Model 30 286 (also sold as the Model 25 286): 128 KB, or the two 64 KB halves dumped
-                from its chips. Revision 2 is the later one; revision 0 works too.
-              </p>
-              <p class="rom-names">Often named <code>33f5381a.bin</code> (revision 2) or <code>27F4092.BIN</code> (revision 0)</p>
-              <p class="rom-status"></p>
-              <p class="rom-choice" hidden>
-                <label>
-                  Use
-                  <select name="bios-choice" aria-label="BIOS to use"></select>
-                </label>
-                <span>from the ROMs you loaded</span>
-              </p>
-            </li>
-          </ul>
-          <p class="rom-tip">
-            Pick the file, or a .zip containing it. A whole ROM collection works too: the Model 30 286 BIOS in it is
-            found. The 86Box emulator's collection keeps both in its
-            <a href="https://github.com/86Box/roms/tree/master/machines/ibmps2_m30_286" target="_blank" rel="noopener"><code>ibmps2_m30_286</code></a>
-            folder.
+            These IBM machines can't switch on without their BIOS, IBM's program in their ROM chips. It is still under
+            copyright, so it isn't included here: choose or drop your own copy. It stays in this browser and is never
+            sent anywhere. The browser remembers it, so you only need to do this once.
           </p>
           <div class="setup-section">
             <h2>Machine</h2>
             <p class="setup-row">
               <label>
+                Model
+                <select name="model" aria-label="Model"></select>
+              </label>
+            </p>
+          </div>
+          <ul class="rom-list">
+            <li data-rom="bios">
+              <p class="rom-heading"><strong class="rom-title">ROMs</strong> <span class="rom-need">Required</span></p>
+              <p class="rom-detail"></p>
+              <p class="rom-status"></p>
+            </li>
+          </ul>
+          <p class="rom-tip">
+            Pick the files, or a .zip containing them. A whole ROM collection works too: every machine's ROMs in it are
+            found and kept. The 86Box emulator's collection has them in its
+            <a href="https://github.com/86Box/roms/tree/master/machines" target="_blank" rel="noopener"><code>machines</code></a>
+            folder (<code>ibmps2_m30_286</code>, <code>ibmps1_2011</code>, <code>ibmat</code>, <code>ibmxt</code>,
+            <code>ibmpc82</code>), and the character ROM in
+            <a href="https://github.com/86Box/roms/tree/master/video/mda" target="_blank" rel="noopener"><code>video/mda</code></a>.
+          </p>
+          <div class="setup-section">
+            <p class="setup-row">
+              <label>
                 Memory
-                <select name="memory" aria-label="Memory">
-                  <option value="1">1 MB</option>
-                  <option value="2" selected>2 MB</option>
-                  <option value="4">4 MB</option>
-                </select>
+                <select name="memory" aria-label="Memory"></select>
               </label>
               <label><input type="checkbox" name="second-drive" /> Second floppy drive (B:)</label>
             </p>
           </div>
           <div class="rom-actions">
-            <button type="button" class="primary" data-action="choose-roms">Choose ROM file...</button>
-            <button type="button" data-action="start" disabled>Switch the PS/2 on</button>
-            <button type="button" data-action="back" hidden>Back to the PS/2</button>
-            <button type="button" data-action="forget-roms" hidden>Forget this ROM</button>
+            <button type="button" class="primary" data-action="choose-roms">Choose ROM files...</button>
+            <button type="button" data-action="start" disabled>Switch it on</button>
+            <button type="button" data-action="back" hidden>Back to the machine</button>
+            <button type="button" data-action="forget-roms" hidden>Forget the ROMs</button>
           </div>
           <p class="rom-message" role="alert"></p>
           <p class="rom-storage-note"></p>
-          <p class="rom-drop-hint">Release to load the ROM</p>
+          <p class="rom-drop-hint">Release to load the ROMs</p>
           <input type="file" name="rom-files" multiple hidden />
         </section>
       </div>
 
-      <section id="toolbar" class="toolbar" aria-label="PS/2">
+      <section id="toolbar" class="toolbar" aria-label="Machine">
         <span class="toolbar-group">
           <button type="button" data-action="pause">Pause</button>
           <button type="button" data-action="reset" title="Restarts DOS, keeping the disks in">Ctrl-Alt-Del</button>
-          <button type="button" data-action="power" title="Switch the PS/2 off and on again">Power cycle</button>
+          <button type="button" data-action="power" title="Switch the machine off and on again">Power cycle</button>
           <button type="button" data-action="fullscreen" title="Esc leaves full screen">Full screen</button>
-          <button type="button" data-action="machine-setup" title="BIOS, memory and drives">Machine setup...</button>
+          <button type="button" data-action="machine-setup" title="Model, ROMs, memory and drives">Machine setup...</button>
         </span>
         <span class="toolbar-group">
-          <button type="button" data-action="save-state" title="Save the whole PS/2, disks included, to come back to later">
+          <button type="button" data-action="save-state" title="Save the whole machine, disks included, to come back to later">
             Save state
           </button>
           <select name="state-slot" aria-label="Save states"></select>
@@ -139,7 +134,7 @@
           <p class="bundled-games-row">
             Free disks:
             <select name="bundled-game" aria-label="Free disks"></select>
-            <button type="button" data-action="play-game" title="Puts the disk in A: and restarts the PS/2">Start</button>
+            <button type="button" data-action="play-game" title="Puts the disk in A: and restarts the machine">Start</button>
           </p>
           <p class="game-info"></p>
         </div>
@@ -157,7 +152,7 @@
           </span>
         </p>
         <p class="disk-options">
-          <label title="Runs the PS/2 as fast as it can go through its power-on self test">
+          <label title="Runs the machine as fast as it can go through its power-on self test">
             <input type="checkbox" name="warp" checked /> Fast start-up
           </label>
         </p>
@@ -176,8 +171,9 @@
           <span class="sound-hint" hidden>Click or press a key to start sound</span>
         </div>
         <p class="controls-hint">
-          Keys type on the PS/2 as labelled (Cmd stays with the browser; Option is Alt). Ctrl-Alt-Del is on the
-          toolbar, since browsers keep it. Click the screen to use the mouse (Esc lets it go).
+          Keys type on the machine as labelled (Cmd stays with the browser; Option is Alt). Ctrl-Alt-Del is on the
+          toolbar, since browsers keep it. On the PS/2s and PS/1, click the screen to use the mouse (Esc lets it go).
+          The PC and XT keyboards have no separate arrow keys: the arrows are the number pad's, with Num Lock off.
         </p>
       </section>
 

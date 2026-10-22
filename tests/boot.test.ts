@@ -1,17 +1,20 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ROMS, gamesDir, hasRom, loadDisk, runSeconds, runToBoot, runUntilText, startMachine, typeText } from './helpers/machine';
+import type { Machine } from '../src/machine';
+import type { ModelId } from '../src/models';
+import { ROMS, gamesDir, hasRom, loadDisk, runSeconds, runToBoot, runUntilText, startMachine, startModel, typeText } from './helpers/machine';
 import { framePng, screenText } from './helpers/png';
 
 // IBM's BIOS is never committed: these tests use your own copies in roms/ and skip without them.
 const shots = process.env.SHOTS;
 const freedos = join(gamesDir, 'freedos.img');
+const freedos360 = join(gamesDir, 'freedos360.img');
 
-function saveShot(name: string, machine: ReturnType<typeof startMachine>): void {
+function saveShot(name: string, machine: Machine): void {
   if (!shots) return;
   mkdirSync(shots, { recursive: true });
-  writeFileSync(join(shots, `${name}.png`), framePng(machine.vga));
+  writeFileSync(join(shots, `${name}.png`), framePng(machine.video));
 }
 
 describe('power-on self test', () => {
@@ -20,7 +23,7 @@ describe('power-on self test', () => {
       const machine = startMachine(path);
       runSeconds(machine, 30);
       saveShot(`post-${revision}`, machine);
-      const text = screenText(machine.vga);
+      const text = screenText(machine.video);
       // The prompt for a disk is a picture with the function keys below it; errors would be listed as numbers.
       expect(text).toContain('F12');
       const numbers = text
@@ -41,9 +44,37 @@ describe.skipIf(!hasRom(ROMS.rev2) || !existsSync(freedos))('FreeDOS', () => {
     typeText(machine, 'dir\n');
     runSeconds(machine, 2);
     saveShot('freedos-dir', machine);
-    const text = screenText(machine.vga);
+    const text = screenText(machine.video);
     expect(text).toContain('KERNEL   SYS');
     expect(text).toContain('COMMAND  COM');
     expect(text).toMatch(/bytes free/);
   });
+});
+
+/** The AT, XT and PC: built from several ROM chips in roms/ (each skips without its own). */
+const PC_MODELS: ModelId[] = ['pc-at', 'pc-xt', 'pc'];
+
+describe('the PC, XT and AT', () => {
+  for (const id of PC_MODELS) {
+    it(`${id} passes POST into Cassette BASIC with no disk`, { timeout: 60000 }, async (context) => {
+      const machine = await startModel(id);
+      if (!machine) return context.skip();
+      // The 4.77 MHz machines count their 640K for half a minute.
+      expect(runUntilText(machine, 'Bytes free', 60), screenText(machine.video)).toBe(true);
+      saveShot(`basic-${id}`, machine);
+      expect(screenText(machine.video)).toContain('The IBM Personal Computer Basic');
+    });
+
+    it.skipIf(!existsSync(freedos360))(`${id} boots FreeDOS from its 360 KB disk`, { timeout: 60000 }, async (context) => {
+      const machine = await startModel(id, loadDisk(freedos360));
+      if (!machine) return context.skip();
+      expect(runUntilText(machine, 'A:\\>', 90)).toBe(true);
+      typeText(machine, 'dir\n');
+      runSeconds(machine, 3);
+      saveShot(`freedos-${id}`, machine);
+      const text = screenText(machine.video);
+      expect(text).toContain('COMMAND  COM');
+      expect(text).toMatch(/bytes free/);
+    });
+  }
 });

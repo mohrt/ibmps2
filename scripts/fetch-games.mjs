@@ -50,7 +50,7 @@ for (const game of catalog.games) {
     if (sha256(bytes) !== game.sha256) throw new Error('the download has changed (checksum mismatch)');
     if (game.gzip) bytes = gunzipSync(bytes);
     if (game.zipEntry) bytes = unzipEntry(bytes, game.zipEntry);
-    // A boot sector game is a single sector: the rest of the floppy is left empty.
+    // A boot sector game is a single sector: the rest of the floppy is left empty (360 KB, which every model's drives read).
     if (game.padTo && bytes.length < game.padTo) {
       const disk = Buffer.alloc(game.padTo);
       bytes.copy(disk);
@@ -73,6 +73,7 @@ for (const game of catalog.games) {
       licenseUrl,
       sourceUrl: game.sourceUrl,
       hint: game.hint,
+      models: game.models,
     });
     console.log(`Saved public/games/${game.file}`);
   } catch (error) {

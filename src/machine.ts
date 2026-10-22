@@ -3,43 +3,46 @@ import { Dma8237 } from './chips/dma8237';
 import { Fdc } from './chips/fdc';
 import { Kbc8042 } from './chips/kbc8042';
 import { Pic8259 } from './chips/pic8259';
+import { Ppi8255 } from './chips/ppi8255';
 import { PIT_HZ, Pit8254 } from './chips/pit8254';
 import { Rtc146818 } from './chips/rtc146818';
 import { Uart16450 } from './chips/uart16450';
+import { Wd1003 } from './chips/wd1003';
 import { I286, type CpuBus } from './cpu/i286';
 import type { FloppyImage } from './drive/floppy-image';
+import { MODELS, type ModelSpec } from './models';
 import { captureState, restoreState, type StateNode } from './state/snapshot';
+import { Cga } from './video/cga';
 import { Vga } from './video/vga';
 
-/** The Model 30 286's 80286 runs at 10 MHz. */
-export const CPU_HZ = 10_000_000;
-export const ROM_BYTES = 0x20000;
 const BASE_MEMORY = 0xa0000;
+/** The most of a ROM that shows below 1 MB, at E0000h-FFFFFh (all of it shows at the top of the 16 MB). */
+const LOW_ROM_BYTES = 0x20000;
 /** Devices are brought up to the CPU's time at least this often (100 µs). */
-const SLICE_CYCLES = 1000;
+const SLICE_CYCLES = 200;
 /** Port 61h's refresh bit toggles every 15 µs or so. */
 const REFRESH_SECONDS = 15e-6;
 /** The longest the power-on self test is taken to run (4 MB takes about 45 seconds to check). */
 const MAX_START_SECONDS = 60;
 
-export type MemorySize = 1 | 2 | 4;
-
-/** Port 1 of the keyboard controller: the planar memory's presence detect bits, by size (drive A is 1.44 MB). */
-function memoryDetect(megabytes: MemorySize): number {
-  return (megabytes >= 4 ? 0x80 : megabytes >= 2 ? 0x90 : 0xa0) | 0x0c;
+/** Port 1 of the keyboard controller: the drive type and planar memory bits on the Model 30 286, by memory size in KB. */
+function keyboardPort(model: ModelSpec, kilobytes: number): number {
+  if (model.id === 'ps1-2011') return 0xb4;
+  return (kilobytes >= 4096 ? 0x80 : kilobytes >= 2048 ? 0x90 : 0xa0) | 0x0c;
 }
 
 /**
- * An IBM PS/2 Model 30 286: a 10 MHz 80286, 1 to 4 MB of memory, the AT's
- * interrupt controllers, timer and DMA, the PS/2 keyboard controller with a
- * keyboard and mouse, the CMOS clock, VGA, a 1.44 MB floppy drive (and an
- * optional second one), a serial port and the speaker. The BIOS is IBM's
- * 128K ROM at E0000h, which the user supplies.
+ * IBM's 286 PCs with VGA and the PS/2 keyboard controller (the PS/2 Model 30
+ * 286 and Model 25 286, and the PS/1 2011): a 10 MHz 80286, the AT's interrupt
+ * controllers, timer and DMA, the keyboard and mouse, the CMOS clock, VGA, a
+ * 1.44 MB floppy drive (and an optional second one), a serial port and the
+ * speaker. The BIOS is IBM's ROM, which the user supplies.
  */
-export class Ps2 implements CpuBus {
-  readonly rom = new Uint8Array(ROM_BYTES);
+export class Machine implements CpuBus {
+  model: ModelSpec = MODELS[0];
+  rom = new Uint8Array(0x20000);
   ram = new Uint8Array(2 << 20);
-  memoryMegabytes: MemorySize = 2;
+  memoryKilobytes = 2048;
   readonly cpu: I286;
   readonly picMaster: Pic8259;
   readonly picSlave = new Pic8259();
@@ -50,9 +53,14 @@ export class Ps2 implements CpuBus {
   });
   readonly rtc = new Rtc146818();
   readonly kbc: Kbc8042;
+  /** The PC's and XT's keyboard interface and switches (sharing the keyboard with the 8042). */
+  readonly ppi: Ppi8255;
   readonly fdc: Fdc;
   readonly vga = new Vga();
+  readonly cga = new Cga();
   readonly uart = new Uart16450();
+  /** The AT adapter's fixed disk controller. */
+  readonly hdc = new Wd1003();
   readonly speaker = new Speaker();
   /** Port 61h's writable bits: 0 gates counter 2, 1 drives the speaker. */
   portB = 0;
@@ -62,11 +70,15 @@ export class Ps2 implements CpuBus {
   lptBase = 0x3bc;
   readonly lpt = new Uint8Array(3);
   private a20Kbc = false;
+  /** The PC's and XT's NMI mask register at A0h. */
+  nmiMask = 0;
   private a20Mask = 0xefffff;
   private refreshTime = 0;
   /** The CPU cycle the devices have been run up to. */
   private deviceCycles = 0;
   private pitFraction = 0;
+  /** Timer clocks towards the next refresh request on the PC and XT. */
+  private refreshTicks = 0;
   private irqPending = false;
   /** The BIOS's power-on self test is running: from switching on (or a reset) until code runs from RAM. */
   starting = true;
@@ -83,9 +95,18 @@ export class Ps2 implements CpuBus {
         this.updateA20();
       },
       resetCpu: () => this.resetCpu(),
-      inputPort: () => memoryDetect(this.memoryMegabytes),
+      inputPort: () => keyboardPort(this.model, this.memoryKilobytes),
     });
     this.fdc = new Fdc(this.dma, (high) => this.picMaster.setLine(6, high));
+    this.ppi = new Ppi8255(
+      this.kbc.keyboard,
+      {
+        setIrq: (high) => this.picMaster.setLine(1, high),
+        portBChanged: (value) => this.setPortB(value),
+        timer2Output: () => this.pit.output(2),
+      },
+      false,
+    );
     this.pit.onOutput = (index, high, tick) => {
       if (index === 0) this.picMaster.setLine(0, high);
       else if (index === 2) this.speaker.set(high && (this.portB & 2) !== 0, tick);
@@ -98,14 +119,54 @@ export class Ps2 implements CpuBus {
 
   // --- Setup -------------------------------------------------------------------------
 
-  /** Loads the BIOS (128K); takes effect at the next power on. */
-  setRom(rom: Uint8Array): void {
-    this.rom.set(rom.subarray(0, ROM_BYTES));
+  /** Which machine this is; takes effect at the next power on. */
+  setModel(model: ModelSpec): void {
+    this.model = model;
   }
 
-  setMemory(megabytes: MemorySize): void {
-    this.memoryMegabytes = megabytes;
-    if (this.ram.length !== megabytes << 20) this.ram = new Uint8Array(megabytes << 20);
+  /** The machine's display adapter: the PS/2s' VGA, or the AT's CGA card. */
+  get video(): Vga | Cga {
+    return this.model.video === 'cga' ? this.cga : this.vga;
+  }
+
+  /** Called with each finished picture, whichever adapter drew it. */
+  set onFrame(handler: (framebuffer: Uint32Array, width: number, height: number) => void) {
+    this.vga.onFrame = this.cga.onFrame = handler;
+  }
+
+  /** The CGA's character ROM. */
+  setCgaFont(rom: Uint8Array): void {
+    this.cga.setFont(rom);
+  }
+
+  /** The PC and XT: an 8088, the 8255 in place of the 8042, and no second interrupt controller. */
+  private get isPc(): boolean {
+    return this.model.cpu === '8088';
+  }
+
+  /** Port 61h's speaker bits: bit 0 gates timer 2, bit 1 drives the speaker. */
+  private setPortB(value: number): void {
+    this.portB = value & 0x0f;
+    this.pit.setGate(2, (value & 1) !== 0);
+    this.speaker.set((value & 2) !== 0 && this.pit.output(2), this.pit.ticks);
+  }
+
+  private get hasSetupRegisters(): boolean {
+    return this.model.setupByte !== null;
+  }
+
+  get cpuHz(): number {
+    return this.model.cpuHz;
+  }
+
+  /** Loads the ROM image, which ends at the top of the address space; takes effect at the next power on. */
+  setRom(rom: Uint8Array): void {
+    this.rom = rom.slice();
+  }
+
+  setMemory(kilobytes: number): void {
+    this.memoryKilobytes = kilobytes;
+    if (this.ram.length !== kilobytes * 1024) this.ram = new Uint8Array(kilobytes * 1024);
   }
 
   setSampleRate(rate: number): void {
@@ -133,18 +194,29 @@ export class Ps2 implements CpuBus {
     this.dma.reset();
     this.rtc.powerOn(date);
     this.kbc.powerOn();
+    this.fdc.mode = this.model.fdc;
     this.fdc.reset();
+    this.fdc.drives.forEach((drive, i) => (drive.kind = this.model.drives[i]));
+    this.kbc.hasAux = this.model.keyboard === 'ps2';
+    this.ppi.reset();
+    this.ppi.configure(this.model.keyboard === 'pc', this.fdc.drives[1].connected ? 2 : 1, this.memoryKilobytes);
+    this.nmiMask = 0;
     this.vga.powerOn();
+    this.cga.powerOn();
     this.uart.reset();
+    this.hdc.reset();
     this.portB = 0;
     this.port92 = 0;
     this.setup.fill(0);
     this.updateA20();
     this.speaker.restart(0);
     this.cpu.reset();
+    this.cpu.is8086 = this.isPc;
+    this.cpu.cycleScale = this.model.cycleScale;
     this.cpu.cycles = 0;
     this.deviceCycles = 0;
     this.pitFraction = 0;
+    this.refreshTicks = 0;
     for (const drive of this.fdc.drives) drive.cylinder = 0;
     this.starting = true;
     this.startedAt = 0;
@@ -154,6 +226,8 @@ export class Ps2 implements CpuBus {
   resetCpu(): void {
     const cycles = this.cpu.cycles;
     this.cpu.reset();
+    this.cpu.is8086 = this.isPc;
+    this.cpu.cycleScale = this.model.cycleScale;
     this.cpu.cycles = cycles;
     this.starting = true;
     this.startedAt = cycles;
@@ -161,7 +235,8 @@ export class Ps2 implements CpuBus {
 
   private updateA20(): void {
     const on = this.a20Kbc || (this.port92 & 2) !== 0;
-    this.a20Mask = on ? 0xffffff : 0xefffff;
+    // The 8088 has 20 address lines.
+    this.a20Mask = this.isPc ? 0xfffff : on ? 0xffffff : 0xefffff;
   }
 
   // --- Memory -------------------------------------------------------------------------
@@ -169,14 +244,19 @@ export class Ps2 implements CpuBus {
   /** Physical memory, after the A20 gate: RAM below 640K and from 1 MB, the VGA, and the ROM at E0000h and at the top. */
   read8(address: number): number {
     const a = address & this.a20Mask;
-    if (a < BASE_MEMORY) return this.ram[a];
+    if (a < this.baseLimit) return this.ram[a];
     return this.readPhysical(a);
   }
 
   write8(address: number, value: number): void {
     const a = address & this.a20Mask;
-    if (a < BASE_MEMORY) this.ram[a] = value;
+    if (a < this.baseLimit) this.ram[a] = value;
     else this.writePhysical(a, value);
+  }
+
+  /** Where the RAM below 640K ends. */
+  private get baseLimit(): number {
+    return Math.min(this.ram.length, BASE_MEMORY);
   }
 
   read16(address: number): number {
@@ -189,21 +269,24 @@ export class Ps2 implements CpuBus {
   }
 
   readPhysical(a: number): number {
-    if (a < BASE_MEMORY) return this.ram[a];
-    if (a < 0xc0000) return this.vga.readMemory(a);
-    if (a < 0xe0000) return 0xff;
-    if (a < 0x100000) return this.rom[a - 0xe0000];
-    if (a >= 0xfe0000) return this.rom[a - 0xfe0000];
+    if (a < BASE_MEMORY) return a < this.ram.length ? this.ram[a] : 0xff;
+    if (a < 0xc0000) return this.video.readMemory(a);
+    const rom = this.rom;
+    if (a < 0x100000) {
+      const fromTop = 0x100000 - a;
+      return fromTop <= Math.min(rom.length, LOW_ROM_BYTES) ? rom[rom.length - fromTop] : 0xff;
+    }
+    if (a >= 0x1000000 - rom.length) return rom[a - (0x1000000 - rom.length)];
     const extended = a - 0x100000 + BASE_MEMORY;
     return extended < this.ram.length ? this.ram[extended] : 0xff;
   }
 
   writePhysical(a: number, value: number): void {
     if (a < BASE_MEMORY) {
-      this.ram[a] = value;
+      if (a < this.ram.length) this.ram[a] = value;
     } else if (a < 0xc0000) {
-      this.vga.writeMemory(a, value);
-    } else if (a >= 0x100000 && a < 0xfe0000) {
+      this.video.writeMemory(a, value);
+    } else if (a >= 0x100000 && a < 0x1000000 - this.rom.length) {
       const extended = a - 0x100000 + BASE_MEMORY;
       if (extended < this.ram.length) this.ram[extended] = value;
     }
@@ -213,7 +296,16 @@ export class Ps2 implements CpuBus {
 
   in8(port: number): number {
     port &= 0xffff;
+    this.cpu.cycles += this.model.ioWait;
     if (port < 0x10 || (port >= 0xc0 && port < 0xe0) || (port >= 0x80 && port < 0x90)) return this.dma.read(port);
+    if (this.isPc) {
+      if (port >= 0x60 && port <= 0x63) {
+        this.syncDevices();
+        return this.ppi.read(port);
+      }
+      // No interrupt controller at A0h and no clock chip at 70h.
+      if (port === 0xa0 || port === 0xa1 || port === 0x70 || port === 0x71) return 0xff;
+    }
     switch (port) {
       case 0x20:
       case 0x21:
@@ -239,27 +331,29 @@ export class Ps2 implements CpuBus {
         this.syncDevices();
         return this.rtc.read(port);
       case 0x91: {
+        if (!this.hasSetupRegisters) return 0xff;
         const value = this.setup[0];
         this.setup[0] = 0;
         return value;
       }
       case 0x92:
-        return this.port92;
+        return this.model.port92 === 'none' ? 0xff : this.port92;
       case 0x94:
-        return this.setup[1];
+        return this.hasSetupRegisters ? this.setup[1] : 0xff;
       case 0x102:
-        return this.setup[2] | 0x08;
+        return this.hasSetupRegisters ? this.setup[2] | 0x08 : 0xff;
       case 0x103:
       case 0x104:
       case 0x105:
-        return this.setup[port - 0x100];
+        return this.hasSetupRegisters ? this.setup[port - 0x100] : 0xff;
       case 0x190:
-        return this.setup[6];
+        return this.hasSetupRegisters ? this.setup[6] : 0xff;
     }
     if (port >= 0x3f0 && port <= 0x3f7 && port !== 0x3f6) {
       this.syncDevices();
       return this.fdc.read(port);
     }
+    if (this.model.fdc === 'at' && this.hdc.owns(port)) return this.hdc.read(port);
     if (port >= this.lptBase && port < this.lptBase + 3) {
       const reg = port - this.lptBase;
       // Status: not busy, no paper error, selected, no error.
@@ -267,6 +361,7 @@ export class Ps2 implements CpuBus {
     }
     if (port >= 0x3b0 && port <= 0x3df) {
       this.syncDevices();
+      if (this.model.video === 'cga') return this.cga.owns(port) ? this.cga.read(port) : 0xff;
       return this.vga.read(port);
     }
     if (this.uart.owns(port)) return this.uart.read(port);
@@ -275,9 +370,22 @@ export class Ps2 implements CpuBus {
 
   out8(port: number, value: number): void {
     port &= 0xffff;
+    this.cpu.cycles += this.model.ioWait;
     if (port < 0x10 || (port >= 0xc0 && port < 0xe0) || (port >= 0x80 && port < 0x90)) {
       this.dma.write(port, value);
       return;
+    }
+    if (this.isPc) {
+      if (port >= 0x60 && port <= 0x63) {
+        this.syncDevices();
+        this.ppi.write(port, value);
+        return;
+      }
+      if (port === 0xa0) {
+        this.nmiMask = value;
+        return;
+      }
+      if (port === 0xa1 || port === 0x70 || port === 0x71) return;
     }
     switch (port) {
       case 0x20:
@@ -302,9 +410,7 @@ export class Ps2 implements CpuBus {
         return;
       case 0x61:
         this.syncDevices();
-        this.portB = value & 0x0f;
-        this.pit.setGate(2, (value & 1) !== 0);
-        this.speaker.set((value & 2) !== 0 && this.pit.output(2), this.pit.ticks);
+        this.setPortB(value);
         return;
       case 0x70:
       case 0x71:
@@ -312,17 +418,18 @@ export class Ps2 implements CpuBus {
         this.rtc.write(port, value);
         return;
       case 0x92: {
-        const reset = value & 1 && !(this.port92 & 1);
-        this.port92 = value & 0x03;
+        if (this.model.port92 === 'none') return;
+        const reset = this.model.port92 === 'ps2' && value & 1 && !(this.port92 & 1);
+        this.port92 = this.model.port92 === 'ps2' ? value & 0x03 : value;
         this.updateA20();
         if (reset) this.resetCpu();
         return;
       }
       case 0x94:
-        this.setup[1] = value;
+        if (this.hasSetupRegisters) this.setup[1] = value;
         return;
       case 0x102:
-        if (this.setup[1] & 0x80) return;
+        if (!this.hasSetupRegisters || this.setup[1] & 0x80) return;
         this.setup[2] = value;
         this.uart.enabled = (value & 0x04) !== 0;
         this.uart.base = value & 0x08 ? 0x3f8 : 0x2f8;
@@ -331,15 +438,19 @@ export class Ps2 implements CpuBus {
       case 0x103:
       case 0x104:
       case 0x105:
-        if (!(this.setup[1] & 0x80)) this.setup[port - 0x100] = value;
+        if (this.hasSetupRegisters && !(this.setup[1] & 0x80)) this.setup[port - 0x100] = value;
         return;
       case 0x190:
-        this.setup[6] = value;
+        if (this.hasSetupRegisters) this.setup[6] = value;
         return;
     }
     if (port >= 0x3f0 && port <= 0x3f7 && port !== 0x3f6) {
       this.syncDevices();
       this.fdc.write(port, value);
+      return;
+    }
+    if (this.model.fdc === 'at' && this.hdc.owns(port)) {
+      this.hdc.write(port, value);
       return;
     }
     if (port >= this.lptBase && port < this.lptBase + 3) {
@@ -348,7 +459,11 @@ export class Ps2 implements CpuBus {
     }
     if (port >= 0x3b0 && port <= 0x3df) {
       this.syncDevices();
-      this.vga.write(port, value);
+      if (this.model.video === 'cga') {
+        if (this.cga.owns(port)) this.cga.write(port, value);
+      } else {
+        this.vga.write(port, value);
+      }
       return;
     }
     if (this.uart.owns(port)) this.uart.write(port, value);
@@ -370,17 +485,32 @@ export class Ps2 implements CpuBus {
     const elapsed = this.cpu.cycles - this.deviceCycles;
     if (elapsed <= 0) return;
     this.deviceCycles = this.cpu.cycles;
-    const seconds = elapsed / CPU_HZ;
-    this.pitFraction += (elapsed * PIT_HZ) / CPU_HZ;
+    const seconds = elapsed / this.cpuHz;
+    this.pitFraction += (elapsed * PIT_HZ) / this.cpuHz;
     const ticks = Math.floor(this.pitFraction);
     this.pitFraction -= ticks;
     if (ticks > 0) this.pit.advance(ticks);
+    if (this.isPc) this.refreshMemory(ticks);
     this.speaker.advanceTo(this.pit.ticks);
     this.refreshTime = (this.refreshTime + seconds) % 1;
-    this.vga.advance(seconds);
+    this.video.advance(seconds);
     this.rtc.advance(seconds);
     this.fdc.advance(seconds);
-    this.kbc.advance(seconds);
+    if (this.isPc) this.ppi.advance(seconds);
+    else this.kbc.advance(seconds);
+  }
+
+  /** On the PC and XT, each period of timer 1 asks DMA channel 0 for a refresh cycle. */
+  private refreshMemory(ticks: number): void {
+    const timer = this.pit.counters[1];
+    if (!timer.running) {
+      this.refreshTicks = 0;
+      return;
+    }
+    this.refreshTicks += ticks;
+    const transfers = Math.floor(this.refreshTicks / timer.reload);
+    this.refreshTicks -= transfers * timer.reload;
+    this.dma.refresh(transfers);
   }
 
   /** Runs for `cycles` CPU clocks. */
@@ -405,14 +535,15 @@ export class Ps2 implements CpuBus {
   private checkStarted(): void {
     const cpu = this.cpu;
     const ranFromRam = !cpu.protectedMode && cpu.segBase[1] + cpu.ip < 0xa0000;
-    if (ranFromRam || cpu.cycles - this.startedAt > MAX_START_SECONDS * CPU_HZ) this.starting = false;
+    if (ranFromRam || cpu.cycles - this.startedAt > MAX_START_SECONDS * this.cpuHz) this.starting = false;
   }
 
   /** Runs until the VGA finishes its next picture (or a tenth of a second passes with the display off). */
   runFrame(): void {
-    const target = this.vga.frames + 1;
-    const limit = this.cpu.cycles + CPU_HZ / 10;
-    while (this.vga.frames < target && this.cpu.cycles < limit) this.run(SLICE_CYCLES * 4);
+    const video = this.video;
+    const target = video.frames + 1;
+    const limit = this.cpu.cycles + this.cpuHz / 10;
+    while (video.frames < target && this.cpu.cycles < limit) this.run(SLICE_CYCLES * 4);
   }
 
   // --- Save states -------------------------------------------------------------------

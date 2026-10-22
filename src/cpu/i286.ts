@@ -148,6 +148,13 @@ export class I286 {
   halted = false;
   /** Set by a triple fault: the CPU stops until it is reset (a PC resets it straight away). */
   shutdown = false;
+  /**
+   * Behave as an 8086/8088 instead: no 286 instructions (their opcodes are the 8086's aliases),
+   * no faults but the divide error, 20 address lines, and the 8086's quirks.
+   */
+  is8086 = false;
+  /** How much longer each instruction takes than on the 286 (the 8088's slower bus and address arithmetic). */
+  cycleScale = 1;
   /** Clock cycles run since power on. */
   cycles = 0;
   /** Interrupts wait an instruction after STI, MOV SS and POP SS. */
@@ -211,6 +218,7 @@ export class I286 {
 
   get flags(): number {
     return (
+      (this.is8086 ? 0xf000 : 0) |
       this.cf |
       2 |
       (this.pf << 2) |
@@ -302,6 +310,7 @@ export class I286 {
 
   /** The linear address of `offset` in a segment, after the 286's limit and rights checks. */
   private linear(seg: number, offset: number, size: number, write: boolean): number {
+    if (this.is8086) return (this.segBase[seg] + offset) & 0xfffff;
     const limit = this.segLimit[seg];
     const last = offset + size - 1;
     if (this.msw & Msw.PE) {
@@ -328,6 +337,8 @@ export class I286 {
   }
 
   read16(seg: number, offset: number): number {
+    // The 8086 wraps a word at offset FFFFh round to the start of the segment.
+    if (this.is8086 && offset === 0xffff) return this.read8(seg, 0xffff) | (this.read8(seg, 0) << 8);
     return this.bus.read16(this.linear(seg, offset, 2, false));
   }
 
@@ -336,11 +347,20 @@ export class I286 {
   }
 
   write16(seg: number, offset: number, value: number): void {
+    if (this.is8086 && offset === 0xffff) {
+      this.write8(seg, 0xffff, value & 0xff);
+      this.write8(seg, 0, value >> 8);
+      return;
+    }
     this.bus.write16(this.linear(seg, offset, 2, true), value);
   }
 
   private fetch8(): number {
     const ip = this.ip;
+    if (this.is8086) {
+      this.ip = (ip + 1) & 0xffff;
+      return this.bus.read8((this.segBase[Seg.CS] + ip) & 0xfffff);
+    }
     if (((ip - this.startIp) & 0xffff) >= 10) throw gp(0);
     if (this.msw & Msw.PE && ip > this.segLimit[Seg.CS]) throw gp(0);
     this.ip = (ip + 1) & 0xffff;
@@ -539,10 +559,18 @@ export class I286 {
 
   /** ROL, ROR, RCL, RCR, SHL, SHR, SAL or SAR, one bit at a time as the chip does (the count is masked to 5 bits). */
   private shift(op: number, value: number, count: number, bits: number): number {
-    count &= 0x1f;
+    // The 286 masks the count to 5 bits; the 8086 shifts as many times as it is told.
+    if (!this.is8086) count &= 0x1f;
     if (count === 0) return value;
     const sign = bits === 8 ? 0x80 : 0x8000;
     const mask = bits === 8 ? 0xff : 0xffff;
+    if (op === 6 && this.is8086) {
+      // The 8086's undocumented SETMO: all ones.
+      this.cf = this.of = this.af = 0;
+      if (bits === 8) this.szp8(mask);
+      else this.szp16(mask);
+      return mask;
+    }
     let r = value;
     let cf = this.cf;
     for (let i = 0; i < count; i++) {
@@ -665,8 +693,11 @@ export class I286 {
         const dividend = (this.regs[Reg.AX] << 16) >> 16;
         const divisor = (value << 24) >> 24;
         if (divisor === 0) throw new CpuFault(Vec.Divide);
-        const quotient = Math.trunc(dividend / divisor);
-        if (quotient > 0x7f || quotient < -0x80) throw new CpuFault(Vec.Divide);
+        let quotient = Math.trunc(dividend / divisor);
+        // The 286 allows a quotient of -128; the 8086 doesn't.
+        if (quotient > 0x7f || quotient < (this.is8086 ? -0x7f : -0x80)) throw new CpuFault(Vec.Divide);
+        // The 8086's microcode reuses the REP flag for the sign: a REP prefix negates the quotient.
+        if (this.is8086 && this.rep) quotient = -quotient;
         this.regs[Reg.AX] = (((dividend % divisor) & 0xff) << 8) | (quotient & 0xff);
         this.cycles += 17;
       }
@@ -728,8 +759,9 @@ export class I286 {
         const dividend = (r[Reg.DX] << 16) | r[Reg.AX];
         const divisor = (value << 16) >> 16;
         if (divisor === 0) throw new CpuFault(Vec.Divide);
-        const quotient = Math.trunc(dividend / divisor);
-        if (quotient > 0x7fff || quotient < -0x8000) throw new CpuFault(Vec.Divide);
+        let quotient = Math.trunc(dividend / divisor);
+        if (quotient > 0x7fff || quotient < (this.is8086 ? -0x7fff : -0x8000)) throw new CpuFault(Vec.Divide);
+        if (this.is8086 && this.rep) quotient = -quotient;
         r[Reg.DX] = dividend % divisor;
         r[Reg.AX] = quotient;
         this.cycles += 25;
@@ -821,12 +853,15 @@ export class I286 {
     this.startIp = this.ip;
     this.startSp = this.regs[Reg.SP];
     const trap = this.tf;
+    const startCycles = this.cycles;
     this.inhibit = false;
     try {
       this.execute();
+      if (this.cycleScale !== 1) this.cycles = startCycles + (this.cycles - startCycles) * this.cycleScale;
     } catch (error) {
       if (!(error instanceof CpuFault)) throw error;
-      this.ip = this.startIp;
+      // The 8086's divide error returns to the next instruction.
+      if (!this.is8086) this.ip = this.startIp;
       // Registers keep what the instruction did before the fault (as the chip's do), but a stack
       // fault restores SP so the pushes can be run again.
       if (this.restoreSp || error.vector === Vec.Stack) this.regs[Reg.SP] = this.startSp;
@@ -909,9 +944,22 @@ export class I286 {
       if (op === 0x26 || op === 0x2e || op === 0x36 || op === 0x3e) this.segOverride = (op >> 3) & 3;
       else if (op === 0xf2) this.rep = 1;
       else if (op === 0xf3) this.rep = 2;
-      else if (op !== 0xf0) break;
+      else if (op !== 0xf0 && !(op === 0xf1 && this.is8086)) break;
       this.cycles++;
       op = this.fetch8();
+    }
+    if (this.is8086) {
+      // The 286's new opcodes are the 8086's aliases: jumps for 60h-6Fh, returns for C0h, C1h, C8h and C9h.
+      if (op >= 0x60 && op <= 0x6f) op += 0x10;
+      else if (op === 0xc0 || op === 0xc1 || op === 0xc8 || op === 0xc9) op += 2;
+      else if (op === 0x0f) {
+        // POP CS.
+        const value = this.read16(Seg.SS, r[Reg.SP]);
+        r[Reg.SP] += 2;
+        this.loadRealSegment(Seg.CS, value);
+        this.cycles += 5;
+        return;
+      }
     }
 
     if (op < 0x40 && (op & 7) < 6) {
@@ -1006,8 +1054,8 @@ export class I286 {
           r[reg] = this.dec16(r[reg]);
           break;
         case 10:
-          // PUSH SP pushes SP as it was before the push.
-          this.push16(r[reg]);
+          // The 286 pushes SP as it was before the push; the 8086 pushes it after.
+          this.push16(reg === Reg.SP && this.is8086 ? (r[reg] - 2) & 0xffff : r[reg]);
           break;
         default:
           r[reg] = this.pop16();
@@ -1240,8 +1288,8 @@ export class I286 {
         return;
       case 0x8c:
         this.modrm();
-        if (this.regField > 3) throw new CpuFault(Vec.Invalid);
-        this.writeE16(this.sreg[this.regField]);
+        if (this.regField > 3 && !this.is8086) throw new CpuFault(Vec.Invalid);
+        this.writeE16(this.sreg[this.regField & 3]);
         this.cycles += this.mod === 3 ? 2 : 3;
         return;
       case 0x8d:
@@ -1252,6 +1300,13 @@ export class I286 {
         return;
       case 0x8e: {
         this.modrm();
+        if (this.is8086) {
+          // The 8086 even loads CS this way.
+          this.loadRealSegment(this.regField & 3, this.readE16());
+          this.inhibit = true;
+          this.cycles += this.mod === 3 ? 2 : 5;
+          return;
+        }
         if (this.regField === Seg.CS || this.regField > 3) throw new CpuFault(Vec.Invalid);
         this.loadSegment(this.regField, this.readE16());
         if (this.regField === Seg.SS) this.inhibit = true;
@@ -1260,7 +1315,7 @@ export class I286 {
       }
       case 0x8f: {
         this.modrm();
-        if (this.regField !== 0) throw new CpuFault(Vec.Invalid);
+        if (this.regField !== 0 && !this.is8086) throw new CpuFault(Vec.Invalid);
         const value = this.read16(Seg.SS, r[Reg.SP]);
         r[Reg.SP] += 2;
         this.writeE16(value);
@@ -1290,7 +1345,7 @@ export class I286 {
         this.cycles += 3;
         return;
       case 0x9c:
-        this.push16(this.protectedMode ? this.flags : this.flags & 0x0fff);
+        this.push16(this.protectedMode || this.is8086 ? this.flags : this.flags & 0x0fff);
         this.cycles += 3;
         return;
       case 0x9d:
@@ -1456,13 +1511,13 @@ export class I286 {
       }
       case 0xc6:
         this.modrm();
-        if (this.regField !== 0) throw new CpuFault(Vec.Invalid);
+        if (this.regField !== 0 && !this.is8086) throw new CpuFault(Vec.Invalid);
         this.writeE8(this.fetch8());
         this.cycles += 3;
         return;
       case 0xc7:
         this.modrm();
-        if (this.regField !== 0) throw new CpuFault(Vec.Invalid);
+        if (this.regField !== 0 && !this.is8086) throw new CpuFault(Vec.Invalid);
         this.writeE16(this.fetch16());
         this.cycles += 3;
         return;
@@ -1510,9 +1565,9 @@ export class I286 {
         const base = this.fetch8();
         const al = r[Reg.AX] & 0xff;
         if (base === 0) {
-          // The flags are already set from AL when the divide error is raised.
-          this.zf = al === 0 ? 1 : 0;
-          this.pf = PARITY[al];
+          // The flags are already set when the divide error is raised: from AL on the 286, as for a zero on the 8086.
+          this.zf = this.is8086 || al === 0 ? 1 : 0;
+          this.pf = this.is8086 ? 1 : PARITY[al];
           this.sf = this.cf = this.of = this.af = 0;
           throw new CpuFault(Vec.Divide);
         }
@@ -1724,10 +1779,14 @@ export class I286 {
         return;
       }
       case 6:
-        // PUSH SP pushes the value from before the push.
-        this.push16(this.mod === 3 ? r[this.rm] : this.readE16());
+      case 7: {
+        // FF /7 is the 8086's alias of PUSH.
+        if (this.regField === 7 && !this.is8086) throw new CpuFault(Vec.Invalid);
+        const sp8086 = this.is8086 && this.mod === 3 && this.rm === Reg.SP;
+        this.push16(sp8086 ? (r[Reg.SP] - 2) & 0xffff : this.mod === 3 ? r[this.rm] : this.readE16());
         this.cycles += 5;
         return;
+      }
       default:
         throw new CpuFault(Vec.Invalid);
     }
@@ -1755,9 +1814,15 @@ export class I286 {
 
   // --- BCD adjustments -----------------------------------------------------------------
 
+  /** The high digit's correction: past 99h (on the 8086, past 9Fh when AF was already set), or with a carry. */
+  private highDigitAdjust(al: number, af: number, cf: number): boolean {
+    return al > (this.is8086 && af ? 0x9f : 0x99) || cf === 1;
+  }
+
   private daa(): void {
     const al = this.regs[Reg.AX] & 0xff;
     const cf = this.cf;
+    const af = this.af;
     let result = al;
     if ((al & 0xf) > 9 || this.af) {
       result += 6;
@@ -1765,7 +1830,7 @@ export class I286 {
     } else {
       this.af = 0;
     }
-    if (al > 0x99 || cf) {
+    if (this.highDigitAdjust(al, af, cf)) {
       result += 0x60;
       this.cf = 1;
     } else {
@@ -1781,16 +1846,18 @@ export class I286 {
   private das(): void {
     const al = this.regs[Reg.AX] & 0xff;
     const cf = this.cf;
+    const af = this.af;
     let result = al;
     this.cf = 0;
     if ((al & 0xf) > 9 || this.af) {
       result -= 6;
-      this.cf = cf | (result < 0 ? 1 : 0);
+      // The 286 also borrows into CF from the low digit; the 8086 doesn't.
+      if (!this.is8086) this.cf = cf | (result < 0 ? 1 : 0);
       this.af = 1;
     } else {
       this.af = 0;
     }
-    if (al > 0x99 || cf) {
+    if (this.highDigitAdjust(al, af, cf)) {
       result -= 0x60;
       this.cf = 1;
     }
@@ -1806,7 +1873,9 @@ export class I286 {
     const r = this.regs;
     const al = r[Reg.AX] & 0xff;
     if ((al & 0xf) > 9 || this.af) {
-      r[Reg.AX] += 0x106;
+      // The 286 carries AL + 6 into AH; the 8086 adds 6 to AL alone.
+      if (this.is8086) r[Reg.AX] = ((r[Reg.AX] + 0x100) & 0xff00) | ((al + 6) & 0xff);
+      else r[Reg.AX] += 0x106;
       this.af = this.cf = 1;
       this.of = (~al & (al + 6) & 0x80) >> 7;
     } else {
@@ -1821,8 +1890,11 @@ export class I286 {
     const r = this.regs;
     const al = r[Reg.AX] & 0xff;
     if ((al & 0xf) > 9 || this.af) {
-      r[Reg.AX] -= 6;
-      r[Reg.AX] -= 0x100;
+      if (this.is8086) r[Reg.AX] = ((r[Reg.AX] - 0x100) & 0xff00) | ((al - 6) & 0xff);
+      else {
+        r[Reg.AX] -= 6;
+        r[Reg.AX] -= 0x100;
+      }
       this.af = this.cf = 1;
       this.of = (al & ~(al - 6) & 0x80) >> 7;
     } else {

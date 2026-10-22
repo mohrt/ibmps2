@@ -1,7 +1,7 @@
 {
   "games": [
     {
-      "title": "FreeDOS (boot disk)",
+      "title": "FreeDOS (1.44 MB boot disk)",
       "file": "freedos.img",
       "url": "https://raw.githubusercontent.com/infernalheaven/freedosbootdisks/330e522bf9323ad54a6ff68c9b7cb9ae7a084cb4/bootdisks/freedos.boot.disk.1.4MB.img",
       "sha256": "2546c15c6cba5814f7a318b1ef4e24158504d73dd24ba6eb6133ffe87686a056",
@@ -9,26 +9,52 @@
       "license": "GPL-2.0",
       "licenseFile": "https://raw.githubusercontent.com/FDOS/kernel/d6791add2043c9d7b584d840a8ffaf8829fd2bdc/COPYING",
       "sourceUrl": "https://github.com/infernalheaven/freedosbootdisks",
-      "hint": "A DOS prompt. Swap in another disk and run its programs from A:."
+      "hint": "A DOS prompt. Swap in another disk and run its programs from A:.",
+      "models": [
+        "m30-286",
+        "m25-286",
+        "ps1-2011"
+      ]
+    },
+    {
+      "title": "FreeDOS (360 KB boot disk)",
+      "file": "freedos360.img",
+      "url": "https://raw.githubusercontent.com/infernalheaven/freedosbootdisks/330e522bf9323ad54a6ff68c9b7cb9ae7a084cb4/bootdisks/freedos.boot.disk.360K.img",
+      "sha256": "b934475864abb27ee3cdc3c215d645c0b497965c45b6b73fc97ac66bb6a3f34e",
+      "credit": "The FreeDOS Project (boot disk by Jason Baker)",
+      "license": "GPL-2.0",
+      "licenseFile": "https://raw.githubusercontent.com/FDOS/kernel/d6791add2043c9d7b584d840a8ffaf8829fd2bdc/COPYING",
+      "sourceUrl": "https://github.com/infernalheaven/freedosbootdisks",
+      "hint": "A DOS prompt. Swap in another disk and run its programs from A:.",
+      "models": [
+        "pc-at",
+        "pc-xt",
+        "pc"
+      ]
     },
     {
       "title": "cubicDoom",
       "file": "cubicdoom.img",
       "url": "https://raw.githubusercontent.com/nanochess/cubicDoom/5e88760a968c6f9a9088e515613b24abc0131d46/doom.img",
       "sha256": "563914b957d822348bbf5be2ad7e03d0177a0be75f906d02682096d45edd0f2e",
-      "padTo": 1474560,
+      "padTo": 368640,
       "credit": "Oscar Toledo G. (nanochess)",
       "license": "BSD-2-Clause",
       "licenseFile": "https://raw.githubusercontent.com/nanochess/cubicDoom/5e88760a968c6f9a9088e515613b24abc0131d46/LICENSE",
       "sourceUrl": "https://github.com/nanochess/cubicDoom",
-      "hint": "Left Ctrl and Left Alt (Option) turn, Left Shift walks, Right Shift shoots."
+      "hint": "Left Ctrl and Left Alt (Option) turn, Left Shift walks, Right Shift shoots.",
+      "models": [
+        "m30-286",
+        "m25-286",
+        "ps1-2011"
+      ]
     },
     {
       "title": "bootRogue",
       "file": "bootrogue.img",
       "url": "https://raw.githubusercontent.com/nanochess/bootRogue/118e1cb7818fdd152b4f008548408ed0ed45e06f/rogue.img",
       "sha256": "fa2fe4eb87c6cbc3e36b969eb2dc8ff1acdaebbbff75bd442e45b2d1a6499c3f",
-      "padTo": 1474560,
+      "padTo": 368640,
       "credit": "Oscar Toledo G. (nanochess)",
       "license": "BSD-2-Clause",
       "licenseFile": "https://raw.githubusercontent.com/nanochess/bootRogue/118e1cb7818fdd152b4f008548408ed0ed45e06f/LICENSE",
@@ -40,7 +66,7 @@
       "file": "bricks.img",
       "url": "https://raw.githubusercontent.com/nanochess/bricks/8fb4d78f50e43c19a9ba35d68692cb2abe04e1df/bricks.img",
       "sha256": "844843e5734499074d1e669da8ce1f1f7f6babef00138ed9f96980f086d5cbf6",
-      "padTo": 1474560,
+      "padTo": 368640,
       "credit": "Oscar Toledo G. (nanochess)",
       "license": "BSD-2-Clause",
       "licenseFile": "https://raw.githubusercontent.com/nanochess/bricks/8fb4d78f50e43c19a9ba35d68692cb2abe04e1df/LICENSE",
@@ -52,7 +78,7 @@
       "file": "lights.img",
       "url": "https://raw.githubusercontent.com/nanochess/lights/4f92b327c1531f997fc41ca949bc6e3905b08dfd/lights.img",
       "sha256": "65ba9ca2e5e310f7e18e761c6a6e8abc9b9825771b56c94986a15f4f079a6e1f",
-      "padTo": 1474560,
+      "padTo": 368640,
       "credit": "Oscar Toledo G. (nanochess)",
       "license": "BSD-2-Clause",
       "licenseFile": "https://raw.githubusercontent.com/nanochess/lights/4f92b327c1531f997fc41ca949bc6e3905b08dfd/LICENSE",
@@ -64,7 +90,7 @@
       "file": "bootle.img",
       "url": "https://raw.githubusercontent.com/nanochess/bootle/6ea8d9aaf7d4ad9302dcfabc452a595bfe19fddc/bootle.img",
       "sha256": "233a125e52d54ae4bfad770112b9e23a661c1127ddb4482ed461b082ec7a1c0a",
-      "padTo": 1474560,
+      "padTo": 368640,
       "credit": "Oscar Toledo G. (nanochess)",
       "license": "BSD-2-Clause",
       "licenseFile": "https://raw.githubusercontent.com/nanochess/bootle/6ea8d9aaf7d4ad9302dcfabc452a595bfe19fddc/LICENSE",
@@ -76,7 +102,7 @@
       "file": "bootbasic.img",
       "url": "https://raw.githubusercontent.com/nanochess/bootBASIC/b2eba2b8a6e98772dd1d71a8041eba9b49454db7/basic.img",
       "sha256": "64fcff7e2cdfcd3e2cd383a77dfec47fb6d0b3f62a004137dd3a07620b787027",
-      "padTo": 1474560,
+      "padTo": 368640,
       "credit": "Oscar Toledo G. (nanochess)",
       "license": "BSD-2-Clause",
       "licenseFile": "https://raw.githubusercontent.com/nanochess/bootBASIC/b2eba2b8a6e98772dd1d71a8041eba9b49454db7/LICENSE",

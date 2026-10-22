@@ -4,7 +4,8 @@
  *   { "games": [{ "title": "Some Game", "file": "some-game.sms" }] }
  *
  * `file` is relative to `games/`. Entries may also give a `credit`, a `license`
- * with a `licenseUrl`, a `sourceUrl` and a short `hint` about the game.
+ * with a `licenseUrl`, a `sourceUrl`, a short `hint` about the game, and the
+ * `models` that can run it (all of them if it doesn't say).
  * Without the manifest no games are offered.
  */
 export interface BundledGame {
@@ -16,6 +17,8 @@ export interface BundledGame {
   licenseUrl?: string;
   sourceUrl?: string;
   hint?: string;
+  /** The machines the disk works on (their drives read it, and it has the video it needs); unset for all. */
+  models?: string[];
 }
 
 const GAMES_DIR = 'games/';
@@ -53,6 +56,8 @@ export function parseGameManifest(json: unknown): BundledGame[] {
       hint: optionalText(fields.hint),
     };
     for (const [key, value] of Object.entries(extras)) if (value) Object.assign(game, { [key]: value });
+    const models = fields.models;
+    if (Array.isArray(models) && models.every((model) => typeof model === 'string')) game.models = models;
     return [game];
   });
 }

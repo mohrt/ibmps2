@@ -1,5 +1,8 @@
 import { SET2_MAKE, SET2_PAUSE, set2Break } from './scancodes';
 
+/** How long the keyboard's power-on self test takes after a reset command. */
+const SELF_TEST_SECONDS = 0.3;
+
 /**
  * An IBM Model M on the PS/2 keyboard port: it answers the controller's
  * commands (reset, identify, LEDs, typematic rate, scan code set) and sends
@@ -13,6 +16,8 @@ export class Ps2Keyboard {
   /** A command waiting for its parameter byte. */
   private command = -1;
   private last = 0xaa;
+  /** Seconds until the self test after a reset finishes and AA is sent (0 when none is running). */
+  private selfTest = 0;
   /** Keys held down, by KeyboardEvent.code. */
   private readonly held = new Set<string>();
 
@@ -22,6 +27,7 @@ export class Ps2Keyboard {
     this.scanSet = 2;
     this.leds = 0;
     this.command = -1;
+    this.selfTest = 0;
     this.held.clear();
   }
 
@@ -88,13 +94,21 @@ export class Ps2Keyboard {
         this.output.length = 0;
         this.enabled = true;
         this.scanSet = 2;
-        // Acknowledge, then the self test passes.
-        this.send(0xfa, 0xaa);
+        // Acknowledge, then pass the self test a moment later (BIOSes time the wait for it).
+        this.send(0xfa);
+        this.selfTest = SELF_TEST_SECONDS;
         break;
       default:
         if (byte >= 0xf7 && byte <= 0xfd) this.send(0xfa);
         else this.send(0xfe);
     }
+  }
+
+  /** Runs for `seconds`: the self test after a reset. */
+  advance(seconds: number): void {
+    if (this.selfTest <= 0) return;
+    this.selfTest -= seconds;
+    if (this.selfTest <= 0) this.send(0xaa);
   }
 
   /** A browser key went down (or repeated). Returns false for keys the PS/2 keyboard doesn't have. */

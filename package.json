@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "fetch:286": "node scripts/fetch-286-tests.mjs",
+    "fetch:8088": "node scripts/fetch-8088-tests.mjs",
     "fetch:games": "node scripts/fetch-games.mjs"
   },
   "devDependencies": {

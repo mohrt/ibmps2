@@ -1,19 +1,18 @@
 import { AudioOutput } from './audio/audio-output';
-import { defaultCmos } from './chips/cmos-defaults';
 import { FloppyImage } from './drive/floppy-image';
 import { STATE_EXTENSION, filesFrom, firstDisk, readMedia, titleFromFileName } from './drive/load';
 import { Emulator } from './emulator';
 import { fetchGame, loadGameManifest, type BundledGame } from './games';
 import { BrowserInput } from './io/browser-input';
-import type { MemorySize } from './ps2';
+import { freshCmos, memoryLabel, modelSpec } from './models';
 import { SCREEN_ASPECT, Screen } from './render/screen';
-import { SystemRomStore, type Bios, type StoredRom } from './roms/system-roms';
+import { RomLibrary, type StoredRom } from './roms/rom-library';
 import { DiskSaves, type DiskSaveRecord, type SaveDiskRecord } from './storage/disk-saves';
 import { SaveStates, decodeSession, encodeSession, type SaveStateRecord, type Session } from './storage/save-states';
 import { memoryStores, openBrowserStores, type KeyValueStore } from './storage/store';
 import { DiskPanel } from './ui/disk-panel';
 import { downloadFile } from './ui/download';
-import { DEFAULT_CHOICES, askForMachine, type MachineChoices } from './ui/machine-setup';
+import { askForMachine, readChoices, romsFor, type MachineChoices, type MachineRoms } from './ui/machine-setup';
 import { JsonRecord, Settings } from './ui/settings';
 import { attachToolbar } from './ui/toolbar';
 import { crc32 } from './util/crc32';
@@ -25,7 +24,7 @@ const REMEMBERED_SETTINGS = ['warp', 'sound', 'volume'];
 const SAVE_INTERVAL_MS = 2000;
 const DRIVES = 2;
 
-/** The CMOS kept between visits, with the machine it was set up for. */
+/** The CMOS kept between visits (one per model), with the machine it was set up for. */
 interface StoredCmos {
   bytes: number[];
   memory: number;
@@ -59,10 +58,10 @@ async function main(): Promise<void> {
     const settings = new Settings();
     settings.bind(document, REMEMBERED_SETTINGS);
 
-    // --- The BIOS ---------------------------------------------------------------------
+    // --- The ROMs ---------------------------------------------------------------------
     let storageWorks = true;
     const stores = await openBrowserStores(() => {
-      status.textContent = "Waiting for the browser's storage: if this PS/2 is open in another tab, close or reload that tab.";
+      status.textContent = "Waiting for the browser's storage: if this emulator is open in another tab, close or reload that tab.";
     }).catch((error: unknown) => {
       console.warn('Browser storage is unavailable; saves will last until the page is closed.', error);
       storageWorks = false;
@@ -70,29 +69,29 @@ async function main(): Promise<void> {
     });
     if (!storageWorks) {
       requireElement<HTMLElement>('.rom-storage-note').textContent =
-        "This browser isn't letting the page store files, so the ROM will be forgotten when you close it.";
+        "This browser isn't letting the page store files, so the ROMs will be forgotten when you close it.";
     }
-    const romStore = new SystemRomStore(stores.systemRoms as KeyValueStore<StoredRom>);
+    const library = new RomLibrary(stores.systemRoms as KeyValueStore<StoredRom>);
+    await library.adoptEarlierRoms();
     const machineRecord = new JsonRecord<MachineChoices>('ibmps2-machine');
-    const cmosRecord = new JsonRecord<StoredCmos>('ibmps2-cmos');
-    let choices: MachineChoices = { ...DEFAULT_CHOICES, ...machineRecord.read() };
+    const cmosRecord = (model: string) => new JsonRecord<StoredCmos>(model === 'm30-286' ? 'ibmps2-cmos' : `ibmps2-cmos-${model}`);
+    let choices = readChoices(machineRecord.read());
 
-    let bios: Bios | null = await romStore.load();
-    if (!bios) {
-      status.textContent = 'Load the PS/2 BIOS above to switch it on.';
-      const setup = await askForMachine(romSetup, romStore, null, { choices });
-      if (!setup) throw new Error('No BIOS ROM.');
-      bios = setup.bios;
+    let roms: MachineRoms | null = await romsFor(library, modelSpec(choices.model));
+    if (!roms) {
+      status.textContent = 'Load the ROMs above to switch the machine on.';
+      const setup = await askForMachine(romSetup, library, { choices });
+      if (!setup) throw new Error('No ROMs.');
+      roms = setup.roms;
       choices = setup.choices;
       machineRecord.write(choices);
     }
-    let biosCrc = crc32(bios.data);
+    let biosCrc = crc32(roms.rom.image);
 
     // --- The machine ------------------------------------------------------------------
     const screen = new Screen(canvas);
     const emulator = new Emulator(screen);
     const machine = emulator.machine;
-    machine.setRom(bios.data);
     const audio = await AudioOutput.create().catch((error: unknown) => {
       console.warn('Audio is unavailable:', error);
       return null;
@@ -100,34 +99,45 @@ async function main(): Promise<void> {
     if (audio) machine.setSampleRate(audio.sampleRate);
 
     let paused = false;
-    /** While Machine setup is open over the running PS/2. */
+    /** While Machine setup is open over the running machine. */
     let changingSetup = false;
     const focusScreen = () => canvas.focus();
 
     const updateStatus = () => {
-      const parts = [bios!.title, `${machine.memoryMegabytes} MB`];
+      const parts = [machine.model.name, roms!.rom.title, memoryLabel(machine.memoryKilobytes)];
       if (machine.fdc.drives[1].connected) parts.push('drive B:');
       status.textContent = parts.join(' · ');
     };
 
-    /** The CMOS for this machine: as the PS/2 last left it, or set up afresh when the machine changed. */
-    const cmosFor = (choices: MachineChoices): Uint8Array => {
-      const stored = cmosRecord.read();
+    /** The CMOS for this machine: as it last left it, or set up afresh when the machine changed (null if it has none). */
+    const cmosFor = (choices: MachineChoices): Uint8Array | null => {
+      const stored = cmosRecord(choices.model).read();
       if (stored.bytes?.length === 128 && stored.memory === choices.memory && stored.secondDrive === choices.secondDrive) {
         return Uint8Array.from(stored.bytes);
       }
-      return defaultCmos(choices.memory, choices.secondDrive ? 2 : 1);
+      return freshCmos(modelSpec(choices.model), choices.memory, choices.secondDrive);
     };
     let savedCmos = '';
     const persistCmos = () => {
+      if (machine.model.cmos === 'none') return;
       const bytes = [...machine.rtc.ram];
       const text = bytes.join(',');
       if (text === savedCmos) return;
       savedCmos = text;
-      cmosRecord.write({ bytes, memory: choices.memory, secondDrive: choices.secondDrive });
+      cmosRecord(choices.model).write({ bytes, memory: choices.memory, secondDrive: choices.secondDrive });
     };
 
-    const applyMachine = (choices: MachineChoices) => {
+    /** Builds the chosen machine from its ROMs; it takes effect with a power cycle. */
+    const applyMachine = (choices: MachineChoices, machineRoms: MachineRoms) => {
+      roms = machineRoms;
+      biosCrc = crc32(machineRoms.rom.image);
+      machine.setModel(modelSpec(choices.model));
+      machine.setRom(machineRoms.rom.image);
+      const font = machineRoms.extras.get('cga-font');
+      if (font) machine.setCgaFont(font.image);
+      savedCmos = '';
+      mouseLabel.hidden = machine.model.keyboard !== 'ps2';
+      showGames();
       machine.setMemory(choices.memory);
       machine.fdc.drives[1].connected = choices.secondDrive;
       diskPanel.setDriveConnected(1, choices.secondDrive);
@@ -139,7 +149,8 @@ async function main(): Promise<void> {
     };
 
     const powerCycle = () => {
-      machine.loadCmos(cmosFor(choices));
+      const cmos = cmosFor(choices);
+      if (cmos) machine.loadCmos(cmos);
       machine.powerOn(new Date());
       emulator.resetTiming();
       audio?.flush();
@@ -198,14 +209,15 @@ async function main(): Promise<void> {
 
     // --- Save states -----------------------------------------------------------------
     const saveStates = new SaveStates(stores.saveStates as KeyValueStore<SaveStateRecord>);
-    const sessionName = () => diskLabels[0] ?? 'PS/2';
+    const sessionName = () => diskLabels[0] ?? machine.model.name.replace(/^IBM /, '');
     const currentSession = async (): Promise<Session> => {
       await persistAll();
       return {
         machine: machine.saveState(),
+        model: choices.model,
         biosCrc,
-        biosTitle: bios!.title,
-        memory: machine.memoryMegabytes,
+        biosTitle: roms!.rom.title,
+        memory: machine.memoryKilobytes,
         secondDrive: machine.fdc.drives[1].connected,
         disks: machine.fdc.drives.slice(0, DRIVES).map((drive, i) =>
           drive.disk ? { name: diskLabels[i] ?? drive.disk.name, bytes: drive.disk.bytes.slice(), origin: diskSaves.origin(i) } : null,
@@ -213,13 +225,17 @@ async function main(): Promise<void> {
       };
     };
     const restoreSession = async (session: Session) => {
-      if (session.biosCrc !== biosCrc) {
-        throw new Error(`That state was saved with the ${session.biosTitle}; load that ROM (Machine setup...) to use it.`);
+      // States from before there were other models are the Model 30 286's, with memory in MB.
+      const saved = readChoices({ model: session.model, memory: session.memory, secondDrive: session.secondDrive });
+      const model = modelSpec(saved.model);
+      const savedRoms = await romsFor(library, model);
+      if (!savedRoms || crc32(savedRoms.rom.image) !== session.biosCrc) {
+        throw new Error(`That state was saved on the ${model.name} with the ${session.biosTitle}; load that ROM (Machine setup...) to use it.`);
       }
       await persistAll();
-      choices = { memory: session.memory as MemorySize, secondDrive: session.secondDrive };
+      choices = saved;
       machineRecord.write(choices);
-      applyMachine(choices);
+      applyMachine(choices, savedRoms);
       session.disks.forEach((saved, drive) => {
         const disk = saved ? new FloppyImage(saved.bytes.slice(), saved.name) : null;
         // In without the disk change line: the restored drive state says whether it was changed.
@@ -237,6 +253,13 @@ async function main(): Promise<void> {
 
     // --- Panels ----------------------------------------------------------------------
     let bundledGames: BundledGame[] = [];
+    /** The free disks offered for the machine as it is set up. */
+    let offeredGames: BundledGame[] = [];
+    const showGames = () => {
+      offeredGames = bundledGames.filter((game) => !game.models || game.models.includes(choices.model));
+      const href = (link?: string) => (link?.startsWith('games/') ? `${import.meta.env.BASE_URL}${link}` : link);
+      diskPanel.setGames(offeredGames.map((game) => ({ ...game, licenseHref: href(game.licenseUrl), sourceHref: href(game.sourceUrl) })));
+    };
     /** Puts one disk image in a drive, or loads a save state. */
     const openDisk = async (file: File, drive: number) => {
       const media = await readMedia(file);
@@ -272,7 +295,7 @@ async function main(): Promise<void> {
         const disk = machine.fdc.drives[drive].disk;
         if (disk) downloadFile(disk.bytes, `${slug(diskLabels[drive] ?? disk.name)}.img`);
       },
-      onGame: (index) => fetchGame(import.meta.env.BASE_URL, bundledGames[index]),
+      onGame: (index) => fetchGame(import.meta.env.BASE_URL, offeredGames[index]),
       onPlayGame: async (file) => {
         await openFiles([file], 0);
         powerCycle();
@@ -318,7 +341,7 @@ async function main(): Promise<void> {
     const input = new BrowserInput(machine, canvas);
     input.attach(window);
     const mouseLabel = requireElement<HTMLElement>('.mouse-label');
-    input.onMouseCapture = (captured) => (mouseLabel.hidden = captured);
+    input.onMouseCapture = (captured) => (mouseLabel.hidden = captured || machine.model.keyboard !== 'ps2');
 
     const refreshStates = async () => toolbar.setStates(await saveStates.list());
     const toolbar = attachToolbar(requireElement('#toolbar'), {
@@ -363,25 +386,21 @@ async function main(): Promise<void> {
 
     void loadGameManifest(import.meta.env.BASE_URL).then((games) => {
       bundledGames = games;
-      const href = (link?: string) => (link?.startsWith('games/') ? `${import.meta.env.BASE_URL}${link}` : link);
-      diskPanel.setGames(games.map((game) => ({ ...game, licenseHref: href(game.licenseUrl), sourceHref: href(game.sourceUrl) })));
+      showGames();
     });
 
-    /** Shows Machine setup over the paused PS/2; what it sets takes effect with a power cycle. */
+    /** Shows Machine setup over the paused machine; what it sets takes effect with a power cycle. */
     const openMachineSetup = async () => {
       if (changingSetup) return;
       changingSetup = true;
       audio?.flush();
-      const setup = await askForMachine(romSetup, romStore, await romStore.load(), { whileRunning: true, choices });
+      const setup = await askForMachine(romSetup, library, { whileRunning: true, choices });
       changingSetup = false;
       if (setup) {
         await persistAll();
-        bios = setup.bios;
-        biosCrc = crc32(setup.bios.data);
-        machine.setRom(setup.bios.data);
         choices = setup.choices;
         machineRecord.write(choices);
-        applyMachine(choices);
+        applyMachine(choices, setup.roms);
         powerCycle();
       }
       focusScreen();
@@ -434,7 +453,7 @@ async function main(): Promise<void> {
       requestAnimationFrame(frame);
     };
 
-    applyMachine(choices);
+    applyMachine(choices, roms);
     diskPanel.showEmpty(0);
     diskPanel.showEmpty(1);
     powerCycle();

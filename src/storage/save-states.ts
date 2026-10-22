@@ -13,9 +13,12 @@ export interface SessionDisk {
 /** Everything needed to resume: the machine, its setup and the disks in its drives. */
 export interface Session {
   machine: StateNode;
+  /** The model it is (unset in states from before there were others: the Model 30 286). */
+  model?: string;
   /** CRC-32 of the BIOS it ran (a state only makes sense with the same ROM). */
   biosCrc: number;
   biosTitle: string;
+  /** In KB (in MB for the Model 30 286 states from before there were other models). */
   memory: number;
   secondDrive: boolean;
   disks: (SessionDisk | null)[];

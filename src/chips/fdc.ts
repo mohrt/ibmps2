@@ -12,8 +12,12 @@ const STEP_SECONDS = 0.0005;
 const SETTLE_SECONDS = 0.001;
 const MAX_CYLINDER = 83;
 
-/** One of the PS/2's floppy drives: a 1.44 MB 3.5" drive, and the disk in it. */
+/** The drives IBM fitted: 3.5" 1.44 MB and 720 KB, 5.25" 1.2 MB and 360 KB. */
+export type DriveKind = '3.5-hd' | '3.5-dd' | '5.25-hd' | '5.25-dd';
+
+/** A floppy drive, and the disk in it. */
 export class FloppyDrive {
+  kind: DriveKind = '3.5-hd';
   disk: FloppyImage | null = null;
   /** Where the head is. */
   cylinder = 0;
@@ -51,14 +55,17 @@ const PARAMETERS: Record<number, number> = {
 };
 
 /**
- * The PS/2 Model 30's floppy controller: an NEC 765-compatible core behind the
- * gate array's PS/2 registers (status registers A and B, the drive type
- * register, and a disk change line that reads 1 for "not changed"), at
- * 3F0h-3F7h on IRQ 6 and DMA channel 2. Data moves by DMA when a command
- * completes.
+ * A floppy controller: an NEC 765-compatible core at 3F0h-3F7h on IRQ 6 and
+ * DMA channel 2. As the PS/2 Model 30 has it (`ps2`), behind the gate array's
+ * registers: status registers A and B, the drive type register, and a disk
+ * change line that reads 1 for "not changed". As the AT has it (`at`), with
+ * the data rate select and a disk change line that reads 1 for "changed".
+ * Data moves by DMA when a command completes.
  */
 export class Fdc {
   readonly drives = [new FloppyDrive(true), new FloppyDrive(false)];
+  /** The PC and PC/XT's adapter has neither the data rate select nor the disk change line: always 250 kbit/s. */
+  mode: 'ps2' | 'at' | 'xt' = 'ps2';
   dor = 0;
   /** The data rate select: 0 for 500 kbit/s (high density), 2 for 250 kbit/s. */
   rate = 0;
@@ -87,6 +94,7 @@ export class Fdc {
 
   reset(): void {
     this.dor = 0;
+    this.rate = this.mode === 'xt' ? 2 : 0;
     this.enterReset();
   }
 
@@ -127,8 +135,10 @@ export class Fdc {
   }
 
   read(port: number): number {
+    const ps2 = this.mode === 'ps2';
     switch (port & 7) {
       case 0: {
+        if (!ps2) return 0xff;
         const drive = this.selectedDrive();
         let value = 0;
         if (this.headDirectionOut) value |= 0x01;
@@ -141,6 +151,7 @@ export class Fdc {
         return value;
       }
       case 1: {
+        if (!ps2) return 0xff;
         let value = this.drives[1].connected ? 0 : 0x80;
         value |= (this.dor & 1) === 0 ? 0x43 : 0x23;
         return value;
@@ -149,17 +160,21 @@ export class Fdc {
         return this.dor;
       case 3:
         // 3.5" high density drives.
-        return 0x00;
+        return ps2 ? 0x00 : 0xff;
       case 4:
         return this.msr;
       case 5:
         return this.readData();
       case 7: {
+        if (this.mode === 'xt') return 0xff;
         this.stepped = false;
         const drive = this.dor & 1;
-        if (!this.motorOn(drive)) return 0;
         const d = this.drives[drive];
-        return (d.changed || !d.disk ? 0x00 : 0x80) | (this.dor & 0x08) | (this.noPrecomp ? 4 : 0) | (this.rate & 3);
+        const changed = d.changed || !d.disk;
+        // On the AT the other bits are the fixed disk adapter's.
+        if (!ps2) return (this.motorOn(drive) && changed ? 0x80 : 0) | 0x7f;
+        if (!this.motorOn(drive)) return 0;
+        return (changed ? 0x00 : 0x80) | (this.dor & 0x08) | (this.noPrecomp ? 4 : 0) | (this.rate & 3);
       }
       default:
         return 0xff;
@@ -185,7 +200,9 @@ export class Fdc {
         this.writeData(value);
         break;
       case 7:
-        this.rate = value & 2;
+        if (this.mode === 'xt') break;
+        // The PS/2 gate array has only 500 and 250 kbit/s; the AT has 300 too.
+        this.rate = this.mode === 'ps2' ? value & 2 : value & 3;
         this.noPrecomp = (value & 4) !== 0;
         break;
     }
@@ -329,21 +346,36 @@ export class Fdc {
     this.schedule(SETTLE_SECONDS + steps * STEP_SECONDS, () => this.setIrq(true));
   }
 
-  /** Whether the drive can read its disk at the selected data rate (a 720K disk needs 250 kbit/s). */
+  /**
+   * Whether the drive can read its disk at the selected data rate: high density at 500 kbit/s,
+   * double density at 250 (or at 300 in a 1.2 MB drive), and nothing high density in a double density drive.
+   */
   private readable(drive: FloppyDrive | undefined): drive is FloppyDrive & { disk: FloppyImage } {
     if (!drive?.connected || !drive.disk || !this.motorOn(this.drives.indexOf(drive))) return false;
-    return drive.disk.geometry.highDensity ? this.rate === 0 : this.rate === 2;
+    const highDensity = drive.disk.geometry.highDensity;
+    if (drive.kind.endsWith('-dd')) return !highDensity && this.rate === 2;
+    if (highDensity) return this.rate === 0;
+    return this.rate === 2 || (drive.kind === '5.25-hd' && this.rate === 1);
+  }
+
+  /**
+   * The disk's cylinder under the head. A 1.2 MB drive has 80 tracks, so a 40-track disk's
+   * cylinders are every other track (the BIOS steps twice); -1 between them.
+   */
+  private diskCylinder(drive: FloppyDrive & { disk: FloppyImage }): number {
+    if (drive.kind === '5.25-hd' && drive.disk.geometry.cylinders <= 42) return drive.cylinder & 1 ? -1 : drive.cylinder >> 1;
+    return drive.cylinder;
   }
 
   private readId(unit: number, head: number): void {
     const drive = this.drives[unit & 1];
-    if (unit > 1 || !this.readable(drive) || head >= drive.disk.geometry.heads) {
+    if (unit > 1 || !this.readable(drive) || head >= drive.disk.geometry.heads || this.diskCylinder(drive) < 0) {
       this.finish([0x40 | (head << 2) | unit, 0x01, 0, drive.cylinder, head, 1, 2]);
       return;
     }
     const sector = drive.nextSector;
     drive.nextSector = (sector % drive.disk.geometry.sectors) + 1;
-    this.finish([(head << 2) | unit, 0, 0, drive.cylinder, head, sector, 2]);
+    this.finish([(head << 2) | unit, 0, 0, this.diskCylinder(drive), head, sector, 2]);
   }
 
   /** READ DATA, WRITE DATA (and their deleted-data forms) and READ TRACK, moving whole sectors by DMA. */
@@ -369,7 +401,12 @@ export class Fdc {
       fail(0x02);
       return;
     }
-    if (drive.cylinder !== cylinder) {
+    const onDisk = this.diskCylinder(drive);
+    if (onDisk < 0) {
+      fail(0x01);
+      return;
+    }
+    if (onDisk !== cylinder) {
       fail(0x04, 0x10);
       return;
     }
@@ -383,7 +420,7 @@ export class Fdc {
     }
     drive.activity = 0.05;
     for (;;) {
-      const offset = disk.offset(drive.cylinder, head, sector);
+      const offset = disk.offset(onDisk, head, sector);
       if (offset < 0) {
         fail(0x04);
         return;
@@ -431,7 +468,7 @@ export class Fdc {
     const filler = command[5];
     const drive = this.drives[unit & 1];
     const done = (st0: number, st1: number) => this.finish([st0 | (head << 2) | unit, st1, 0, drive.cylinder, head, 1, command[2]]);
-    if (unit > 1 || !this.readable(drive)) {
+    if (unit > 1 || !this.readable(drive) || this.diskCylinder(drive) < 0) {
       done(0x40, 0x01);
       return;
     }
@@ -443,7 +480,7 @@ export class Fdc {
     drive.activity = 0.05;
     for (let i = 0; i < count; i++) {
       const id = [0, 0, 0, 0].map(() => this.dma.readByte(DMA_CHANNEL)[0]);
-      const offset = disk.offset(drive.cylinder, head, id[2]);
+      const offset = disk.offset(this.diskCylinder(drive), head, id[2]);
       if (offset >= 0) disk.bytes.fill(filler, offset, offset + SECTOR_BYTES);
     }
     disk.dirty = true;
