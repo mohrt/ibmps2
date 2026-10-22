@@ -51,11 +51,38 @@ describe.skipIf(!hasRom(ROMS.rev2) || !existsSync(freedos))('FreeDOS', () => {
   });
 });
 
-/** The AT, XT and PC: built from several ROM chips in roms/ (each skips without its own). */
-const PC_MODELS: ModelId[] = ['pc-at', 'pc-xt', 'pc'];
+/** Boots FreeDOS from its 360 KB disk (which every model's drives read) and lists the disk. */
+async function bootsFreeDos(id: ModelId, context: { skip: () => void }): Promise<void> {
+  const machine = await startModel(id, loadDisk(freedos360));
+  if (!machine) return context.skip();
+  expect(runUntilText(machine, 'A:\\>', 90)).toBe(true);
+  typeText(machine, 'dir\n');
+  runSeconds(machine, 3);
+  saveShot(`freedos-${id}`, machine);
+  const text = screenText(machine.video);
+  expect(text).toContain('COMMAND  COM');
+  expect(text).toMatch(/bytes free/);
+}
+
+/** The other machines are built from several ROM chips in roms/ (each skips without its own). */
+describe('the PS/2 Model 30 and Model 25 (8086)', () => {
+  for (const id of ['m30', 'm25'] as ModelId[]) {
+    it(`${id} passes POST and asks for a startup disk`, { timeout: 60000 }, async (context) => {
+      const machine = await startModel(id);
+      if (!machine) return context.skip();
+      runSeconds(machine, 30);
+      saveShot(`post-${id}`, machine);
+      const text = screenText(machine.video);
+      expect(text, text).toContain('F12');
+      expect(text).not.toMatch(/\d{3}-/);
+    });
+
+    it.skipIf(!existsSync(freedos360))(`${id} boots FreeDOS from a 360 KB disk`, { timeout: 60000 }, (context) => bootsFreeDos(id, context));
+  }
+});
 
 describe('the PC, XT and AT', () => {
-  for (const id of PC_MODELS) {
+  for (const id of ['pc-at', 'pc-xt', 'pc'] as ModelId[]) {
     it(`${id} passes POST into Cassette BASIC with no disk`, { timeout: 60000 }, async (context) => {
       const machine = await startModel(id);
       if (!machine) return context.skip();
@@ -65,16 +92,6 @@ describe('the PC, XT and AT', () => {
       expect(screenText(machine.video)).toContain('The IBM Personal Computer Basic');
     });
 
-    it.skipIf(!existsSync(freedos360))(`${id} boots FreeDOS from its 360 KB disk`, { timeout: 60000 }, async (context) => {
-      const machine = await startModel(id, loadDisk(freedos360));
-      if (!machine) return context.skip();
-      expect(runUntilText(machine, 'A:\\>', 90)).toBe(true);
-      typeText(machine, 'dir\n');
-      runSeconds(machine, 3);
-      saveShot(`freedos-${id}`, machine);
-      const text = screenText(machine.video);
-      expect(text).toContain('COMMAND  COM');
-      expect(text).toMatch(/bytes free/);
-    });
+    it.skipIf(!existsSync(freedos360))(`${id} boots FreeDOS from its 360 KB disk`, { timeout: 60000 }, (context) => bootsFreeDos(id, context));
   }
 });

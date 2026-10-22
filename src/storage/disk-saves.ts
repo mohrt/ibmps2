@@ -1,4 +1,4 @@
-import { FloppyImage, SECTOR_BYTES, formattedDisk } from '../drive/floppy-image';
+import { FloppyImage, SECTOR_BYTES, formattedDisk, type BlankFormat } from '../drive/floppy-image';
 import type { KeyValueStore } from './store';
 
 /** Sectors a program wrote to a disk image, by sector number. */
@@ -73,12 +73,12 @@ export class DiskSaves {
     return { disk: image, hasSavedChanges: record !== undefined };
   }
 
-  async createSaveDisk(drive: number): Promise<{ disk: FloppyImage; name: string }> {
+  async createSaveDisk(drive: number, format?: BlankFormat): Promise<{ disk: FloppyImage; name: string }> {
     const count = (await this.saveDisks.entries()).length;
     const name = `Blank disk ${count + 1}`;
     const now = Date.now();
     const id = `save-${now}`;
-    const disk = new FloppyImage(formattedDisk(), name);
+    const disk = new FloppyImage(formattedDisk(format), name);
     await this.saveDisks.put(id, { name, created: now, updated: now, bytes: disk.bytes.slice() });
     this.origins[drive] = { kind: 'saveDisk', id, name };
     return { disk, name };

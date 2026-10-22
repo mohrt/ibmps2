@@ -26,6 +26,16 @@ describe('floppy images', () => {
     expect(new FloppyImage(disk, 'blank').offset(79, 1, 18)).toBe(disk.length - 512);
   });
 
+  it('make blank disks in the smaller sizes too', () => {
+    const disk = formattedDisk('360 KB');
+    const view = new DataView(disk.buffer);
+    expect(new FloppyImage(disk, 'blank').geometry.label).toBe('360 KB');
+    expect(view.getUint16(19, true)).toBe(720);
+    expect(disk[21]).toBe(0xfd);
+    // The second FAT follows the first's two sectors.
+    expect([...disk.subarray(3 * 512, 3 * 512 + 3)]).toEqual([0xfd, 0xff, 0xff]);
+  });
+
   it('find the sectors a program changed', () => {
     const original = formattedDisk();
     const current = original.slice();

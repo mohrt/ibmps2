@@ -24,8 +24,12 @@ export class Pic8259 {
   specialMask = false;
   /** OCW3 poll command: the next read returns the poll byte. */
   poll = false;
-  /** Lines that are slave controllers (on the master: IRQ 2). */
+  /** Lines that are slave controllers (on the master: IRQ 2; none on a PC with one controller). */
   cascadeLines = 0;
+  /** ICW1 and ICW2 as last written (the Model 25 and 30's gate array reads them back). */
+  readonly icw = [0, 0];
+  /** Vectors replacing a line's own, -1 for none (the Model 25 and 30 send IRQ 1 to INT 71h). */
+  readonly vectorOverride = new Int16Array(8).fill(-1);
   /** 0 when ready for OCWs; otherwise the ICW expected next (2, 3 or 4). */
   private initStep = 0;
   private needIcw4 = false;
@@ -104,7 +108,7 @@ export class Pic8259 {
       this.isr |= bit;
     }
     this.onChange();
-    return this.vectorBase + line;
+    return this.vectorOverride[line] >= 0 ? this.vectorOverride[line] : this.vectorBase + line;
   }
 
   private nonSpecificEoi(rotate: boolean): void {
@@ -122,6 +126,7 @@ export class Pic8259 {
     if ((port & 1) === 0) {
       if (value & 0x10) {
         // ICW1.
+        this.icw[0] = value;
         this.initStep = 2;
         this.needIcw4 = (value & 1) !== 0;
         this.single = (value & 2) !== 0;
@@ -167,6 +172,7 @@ export class Pic8259 {
     } else {
       switch (this.initStep) {
         case 2:
+          this.icw[1] = value;
           this.vectorBase = value & 0xf8;
           this.initStep = this.single ? (this.needIcw4 ? 4 : 0) : 3;
           break;

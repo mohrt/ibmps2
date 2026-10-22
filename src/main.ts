@@ -4,7 +4,7 @@ import { STATE_EXTENSION, filesFrom, firstDisk, readMedia, titleFromFileName } f
 import { Emulator } from './emulator';
 import { fetchGame, loadGameManifest, type BundledGame } from './games';
 import { BrowserInput } from './io/browser-input';
-import { freshCmos, memoryLabel, modelSpec } from './models';
+import { blankFormatFor, freshCmos, hasMousePort, memoryLabel, modelSpec } from './models';
 import { SCREEN_ASPECT, Screen } from './render/screen';
 import { RomLibrary, type StoredRom } from './roms/rom-library';
 import { DiskSaves, type DiskSaveRecord, type SaveDiskRecord } from './storage/disk-saves';
@@ -112,7 +112,8 @@ async function main(): Promise<void> {
     /** The CMOS for this machine: as it last left it, or set up afresh when the machine changed (null if it has none). */
     const cmosFor = (choices: MachineChoices): Uint8Array | null => {
       const stored = cmosRecord(choices.model).read();
-      if (stored.bytes?.length === 128 && stored.memory === choices.memory && stored.secondDrive === choices.secondDrive) {
+      const size = modelSpec(choices.model).cmos === 'mm58167' ? 32 : 128;
+      if (stored.bytes?.length === size && stored.memory === choices.memory && stored.secondDrive === choices.secondDrive) {
         return Uint8Array.from(stored.bytes);
       }
       return freshCmos(modelSpec(choices.model), choices.memory, choices.secondDrive);
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
     let savedCmos = '';
     const persistCmos = () => {
       if (machine.model.cmos === 'none') return;
-      const bytes = [...machine.rtc.ram];
+      const bytes = [...machine.cmosRam];
       const text = bytes.join(',');
       if (text === savedCmos) return;
       savedCmos = text;
@@ -136,7 +137,7 @@ async function main(): Promise<void> {
       const font = machineRoms.extras.get('cga-font');
       if (font) machine.setCgaFont(font.image);
       savedCmos = '';
-      mouseLabel.hidden = machine.model.keyboard !== 'ps2';
+      mouseLabel.hidden = !hasMousePort(machine.model);
       showGames();
       machine.setMemory(choices.memory);
       machine.fdc.drives[1].connected = choices.secondDrive;
@@ -302,7 +303,7 @@ async function main(): Promise<void> {
       },
       onNewSaveDisk: async (drive) => {
         await persistDisk(drive);
-        const { disk, name } = await diskSaves.createSaveDisk(drive);
+        const { disk, name } = await diskSaves.createSaveDisk(drive, blankFormatFor(machine.model.drives[drive]));
         machine.insertDisk(drive, disk);
         diskLabels[drive] = name;
         diskPanel.showDisk(drive, name, describeDisk(disk), false);
@@ -341,7 +342,7 @@ async function main(): Promise<void> {
     const input = new BrowserInput(machine, canvas);
     input.attach(window);
     const mouseLabel = requireElement<HTMLElement>('.mouse-label');
-    input.onMouseCapture = (captured) => (mouseLabel.hidden = captured || machine.model.keyboard !== 'ps2');
+    input.onMouseCapture = (captured) => (mouseLabel.hidden = captured || !hasMousePort(machine.model));
 
     const refreshStates = async () => toolbar.setStates(await saveStates.list());
     const toolbar = attachToolbar(requireElement('#toolbar'), {

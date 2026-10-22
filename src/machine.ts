@@ -1,7 +1,9 @@
 import { Speaker } from './audio/speaker';
 import { Dma8237 } from './chips/dma8237';
 import { Fdc } from './chips/fdc';
+import { GateArray } from './chips/gate-array';
 import { Kbc8042 } from './chips/kbc8042';
+import { Mm58167 } from './chips/mm58167';
 import { Pic8259 } from './chips/pic8259';
 import { Ppi8255 } from './chips/ppi8255';
 import { PIT_HZ, Pit8254 } from './chips/pit8254';
@@ -13,6 +15,7 @@ import type { FloppyImage } from './drive/floppy-image';
 import { MODELS, type ModelSpec } from './models';
 import { captureState, restoreState, type StateNode } from './state/snapshot';
 import { Cga } from './video/cga';
+import { Mcga } from './video/mcga';
 import { Vga } from './video/vga';
 
 const BASE_MEMORY = 0xa0000;
@@ -32,11 +35,11 @@ function keyboardPort(model: ModelSpec, kilobytes: number): number {
 }
 
 /**
- * IBM's 286 PCs with VGA and the PS/2 keyboard controller (the PS/2 Model 30
- * 286 and Model 25 286, and the PS/1 2011): a 10 MHz 80286, the AT's interrupt
- * controllers, timer and DMA, the keyboard and mouse, the CMOS clock, VGA, a
- * 1.44 MB floppy drive (and an optional second one), a serial port and the
- * speaker. The BIOS is IBM's ROM, which the user supplies.
+ * IBM's PCs, built to the model's spec: the 286 PS/2s and PS/1 (VGA, the PS/2
+ * keyboard controller, the CMOS clock), the 8086 PS/2s (MCGA and the gate
+ * array), the PC/AT (CGA and the AT's 8042) and the 8088 PC and XT (CGA and
+ * the 8255), with their interrupt controllers, timer, DMA, floppy drives, a
+ * serial port and the speaker. The BIOS is IBM's ROM, which the user supplies.
  */
 export class Machine implements CpuBus {
   model: ModelSpec = MODELS[0];
@@ -52,12 +55,17 @@ export class Machine implements CpuBus {
     writePhysical: (address, value) => this.writePhysical(address, value),
   });
   readonly rtc = new Rtc146818();
+  /** The Model 30's clock. */
+  readonly clock = new Mm58167();
   readonly kbc: Kbc8042;
   /** The PC's and XT's keyboard interface and switches (sharing the keyboard with the 8042). */
   readonly ppi: Ppi8255;
+  /** The Model 25 and 30's gate array (sharing the keyboard and mouse with the 8042). */
+  readonly gateArray: GateArray;
   readonly fdc: Fdc;
   readonly vga = new Vga();
   readonly cga = new Cga();
+  readonly mcga = new Mcga();
   readonly uart = new Uart16450();
   /** The AT adapter's fixed disk controller. */
   readonly hdc = new Wd1003();
@@ -73,6 +81,8 @@ export class Machine implements CpuBus {
   /** The PC's and XT's NMI mask register at A0h. */
   nmiMask = 0;
   private a20Mask = 0xefffff;
+  /** Below this, an address is in RAM at the same offset (the Model 25 and 30's bank switching turns it off). */
+  private directRamEnd = BASE_MEMORY;
   private refreshTime = 0;
   /** The CPU cycle the devices have been run up to. */
   private deviceCycles = 0;
@@ -107,6 +117,16 @@ export class Machine implements CpuBus {
       },
       false,
     );
+    this.gateArray = new GateArray(this.kbc.keyboard, this.kbc.mouse, {
+      setIrq: (line, high) => this.picMaster.setLine(line, high),
+      picIcw: (index) => this.picMaster.icw[index],
+      portBChanged: (value) => this.setPortB(value),
+      timer2Output: () => this.pit.output(2),
+    });
+    this.mcga.onInterrupt = (high) => this.picMaster.setLine(2, high);
+    this.clock.onInterrupt = () => {
+      if (!(this.gateArray.portA1 & 0x01)) this.picMaster.pulse(1);
+    };
     this.pit.onOutput = (index, high, tick) => {
       if (index === 0) this.picMaster.setLine(0, high);
       else if (index === 2) this.speaker.set(high && (this.portB & 2) !== 0, tick);
@@ -124,14 +144,14 @@ export class Machine implements CpuBus {
     this.model = model;
   }
 
-  /** The machine's display adapter: the PS/2s' VGA, or the AT's CGA card. */
-  get video(): Vga | Cga {
-    return this.model.video === 'cga' ? this.cga : this.vga;
+  /** The machine's display adapter: the VGA or MCGA built into a PS/2, or the CGA card of the others. */
+  get video(): Vga | Cga | Mcga {
+    return this.model.video === 'cga' ? this.cga : this.model.video === 'mcga' ? this.mcga : this.vga;
   }
 
   /** Called with each finished picture, whichever adapter drew it. */
   set onFrame(handler: (framebuffer: Uint32Array, width: number, height: number) => void) {
-    this.vga.onFrame = this.cga.onFrame = handler;
+    this.vga.onFrame = this.cga.onFrame = this.mcga.onFrame = handler;
   }
 
   /** The CGA's character ROM. */
@@ -139,9 +159,19 @@ export class Machine implements CpuBus {
     this.cga.setFont(rom);
   }
 
-  /** The PC and XT: an 8088, the 8255 in place of the 8042, and no second interrupt controller. */
-  private get isPc(): boolean {
-    return this.model.cpu === '8088';
+  /** The 8088 and 8086 machines: 20 address lines and one interrupt controller. */
+  private get is8086(): boolean {
+    return this.model.cpu !== '286';
+  }
+
+  /** The PC and XT, with the 8255 in place of the 8042. */
+  private get hasPpi(): boolean {
+    return this.model.keyboard === 'xt' || this.model.keyboard === 'pc';
+  }
+
+  /** The Model 25 and 30, with the gate array in place of the 8042. */
+  private get hasGateArray(): boolean {
+    return this.model.keyboard === 'gate-array';
   }
 
   /** Port 61h's speaker bits: bit 0 gates timer 2, bit 1 drives the speaker. */
@@ -173,9 +203,15 @@ export class Machine implements CpuBus {
     this.speaker.setSampleRate(rate);
   }
 
+  /** The clock's battery-backed RAM, as kept between visits: the CMOS's 128 bytes, or the Model 30 clock's 32 registers. */
+  get cmosRam(): Uint8Array {
+    return this.model.cmos === 'mm58167' ? this.clock.regs : this.rtc.ram;
+  }
+
   /** The CMOS RAM kept from last time (the clock registers come from the date at power on). */
   loadCmos(ram: Uint8Array): void {
-    this.rtc.ram.set(ram.subarray(0x0e, 0x80), 0x0e);
+    if (this.model.cmos === 'mm58167') this.clock.regs.set(ram.subarray(8, 16), 8);
+    else this.rtc.ram.set(ram.subarray(0x0e, 0x80), 0x0e);
   }
 
   insertDisk(drive: number, disk: FloppyImage | null): void {
@@ -193,6 +229,7 @@ export class Machine implements CpuBus {
     this.pit.reset();
     this.dma.reset();
     this.rtc.powerOn(date);
+    this.clock.powerOn(date);
     this.kbc.powerOn();
     this.fdc.mode = this.model.fdc;
     this.fdc.reset();
@@ -203,6 +240,12 @@ export class Machine implements CpuBus {
     this.nmiMask = 0;
     this.vga.powerOn();
     this.cga.powerOn();
+    this.mcga.powerOn();
+    this.gateArray.reset();
+    this.picMaster.cascadeLines = this.is8086 ? 0 : 0x04;
+    // The gate array sends the keyboard's and mouse's IRQ 1 to INT 71h, whose handler passes the keyboard's on to INT 9.
+    this.picMaster.vectorOverride[1] = this.hasGateArray ? 0x71 : -1;
+    this.updateRamMap();
     this.uart.reset();
     this.hdc.reset();
     this.portB = 0;
@@ -211,7 +254,7 @@ export class Machine implements CpuBus {
     this.updateA20();
     this.speaker.restart(0);
     this.cpu.reset();
-    this.cpu.is8086 = this.isPc;
+    this.cpu.is8086 = this.is8086;
     this.cpu.cycleScale = this.model.cycleScale;
     this.cpu.cycles = 0;
     this.deviceCycles = 0;
@@ -226,7 +269,7 @@ export class Machine implements CpuBus {
   resetCpu(): void {
     const cycles = this.cpu.cycles;
     this.cpu.reset();
-    this.cpu.is8086 = this.isPc;
+    this.cpu.is8086 = this.is8086;
     this.cpu.cycleScale = this.model.cycleScale;
     this.cpu.cycles = cycles;
     this.starting = true;
@@ -236,7 +279,7 @@ export class Machine implements CpuBus {
   private updateA20(): void {
     const on = this.a20Kbc || (this.port92 & 2) !== 0;
     // The 8088 has 20 address lines.
-    this.a20Mask = this.isPc ? 0xfffff : on ? 0xffffff : 0xefffff;
+    this.a20Mask = this.is8086 ? 0xfffff : on ? 0xffffff : 0xefffff;
   }
 
   // --- Memory -------------------------------------------------------------------------
@@ -244,19 +287,38 @@ export class Machine implements CpuBus {
   /** Physical memory, after the A20 gate: RAM below 640K and from 1 MB, the VGA, and the ROM at E0000h and at the top. */
   read8(address: number): number {
     const a = address & this.a20Mask;
-    if (a < this.baseLimit) return this.ram[a];
+    if (a < this.directRamEnd) return this.ram[a];
     return this.readPhysical(a);
   }
 
   write8(address: number, value: number): void {
     const a = address & this.a20Mask;
-    if (a < this.baseLimit) this.ram[a] = value;
+    if (a < this.directRamEnd) this.ram[a] = value;
     else this.writePhysical(a, value);
   }
 
-  /** Where the RAM below 640K ends. */
-  private get baseLimit(): number {
-    return Math.min(this.ram.length, BASE_MEMORY);
+  private updateRamMap(): void {
+    const banked = this.hasGateArray && (this.gateArray.ramControl !== 0 || this.memoryKilobytes < 640);
+    this.directRamEnd = banked ? 0 : Math.min(this.ram.length, BASE_MEMORY);
+  }
+
+  /**
+   * Where the Model 25 and 30's gate array puts an address below A0000h in its RAM (-1 for none):
+   * port 6Bh switches off 64K banks from 40000h, and bit 0 maps a 512K machine's RAM from 0
+   * (it is at 20000h otherwise) or, with 640K, moves the first 512K up past the low 128K.
+   */
+  private bankedRam(a: number): number {
+    const control = this.gateArray.ramControl;
+    if (a >= 0x40000 && control & (1 << ((a >> 16) - 3))) return -1;
+    let offset = a;
+    if (control & 1) {
+      if (a >= 0x80000) return -1;
+      if (this.memoryKilobytes >= 640) offset += 0x20000;
+    } else if (this.memoryKilobytes < 640) {
+      if (a < 0x20000) return -1;
+      offset -= 0x20000;
+    }
+    return offset < this.ram.length ? offset : -1;
   }
 
   read16(address: number): number {
@@ -269,7 +331,13 @@ export class Machine implements CpuBus {
   }
 
   readPhysical(a: number): number {
-    if (a < BASE_MEMORY) return a < this.ram.length ? this.ram[a] : 0xff;
+    if (a < BASE_MEMORY) {
+      if (this.hasGateArray) {
+        const offset = this.bankedRam(a);
+        return offset >= 0 ? this.ram[offset] : 0xff;
+      }
+      return a < this.ram.length ? this.ram[a] : 0xff;
+    }
     if (a < 0xc0000) return this.video.readMemory(a);
     const rom = this.rom;
     if (a < 0x100000) {
@@ -283,7 +351,8 @@ export class Machine implements CpuBus {
 
   writePhysical(a: number, value: number): void {
     if (a < BASE_MEMORY) {
-      if (a < this.ram.length) this.ram[a] = value;
+      const offset = this.hasGateArray ? this.bankedRam(a) : a < this.ram.length ? a : -1;
+      if (offset >= 0) this.ram[offset] = value;
     } else if (a < 0xc0000) {
       this.video.writeMemory(a, value);
     } else if (a >= 0x100000 && a < 0x1000000 - this.rom.length) {
@@ -298,14 +367,20 @@ export class Machine implements CpuBus {
     port &= 0xffff;
     this.cpu.cycles += this.model.ioWait;
     if (port < 0x10 || (port >= 0xc0 && port < 0xe0) || (port >= 0x80 && port < 0x90)) return this.dma.read(port);
-    if (this.isPc) {
-      if (port >= 0x60 && port <= 0x63) {
-        this.syncDevices();
-        return this.ppi.read(port);
-      }
-      // No interrupt controller at A0h and no clock chip at 70h.
-      if (port === 0xa0 || port === 0xa1 || port === 0x70 || port === 0x71) return 0xff;
+    if (this.hasPpi && port >= 0x60 && port <= 0x63) {
+      this.syncDevices();
+      return this.ppi.read(port);
     }
+    if (this.hasGateArray && this.gateArray.owns(port)) {
+      this.syncDevices();
+      return this.gateArray.read(port);
+    }
+    if (this.model.cmos === 'mm58167' && this.clock.owns(port)) {
+      this.syncDevices();
+      return this.clock.read(port);
+    }
+    // No second interrupt controller at A0h, no 8042 at 64h and no CMOS clock at 70h.
+    if (this.is8086 && (port === 0x64 || port === 0xa0 || port === 0xa1 || port === 0x70 || port === 0x71)) return 0xff;
     switch (port) {
       case 0x20:
       case 0x21:
@@ -362,6 +437,7 @@ export class Machine implements CpuBus {
     if (port >= 0x3b0 && port <= 0x3df) {
       this.syncDevices();
       if (this.model.video === 'cga') return this.cga.owns(port) ? this.cga.read(port) : 0xff;
+      if (this.model.video === 'mcga') return this.mcga.owns(port) ? this.mcga.read(port) : 0xff;
       return this.vga.read(port);
     }
     if (this.uart.owns(port)) return this.uart.read(port);
@@ -375,17 +451,26 @@ export class Machine implements CpuBus {
       this.dma.write(port, value);
       return;
     }
-    if (this.isPc) {
-      if (port >= 0x60 && port <= 0x63) {
-        this.syncDevices();
-        this.ppi.write(port, value);
-        return;
-      }
-      if (port === 0xa0) {
-        this.nmiMask = value;
-        return;
-      }
-      if (port === 0xa1 || port === 0x70 || port === 0x71) return;
+    if (this.hasPpi && port >= 0x60 && port <= 0x63) {
+      this.syncDevices();
+      this.ppi.write(port, value);
+      return;
+    }
+    if (this.hasGateArray && this.gateArray.owns(port)) {
+      this.syncDevices();
+      this.gateArray.write(port, value);
+      if (port === 0x65) this.applyPlanarEnables();
+      else if (port === 0x6b) this.updateRamMap();
+      return;
+    }
+    if (this.model.cmos === 'mm58167' && this.clock.owns(port)) {
+      this.syncDevices();
+      this.clock.write(port, value);
+      return;
+    }
+    if (this.is8086 && (port === 0x64 || port === 0xa0 || port === 0xa1 || port === 0x70 || port === 0x71)) {
+      if (port === 0xa0) this.nmiMask = value;
+      return;
     }
     switch (port) {
       case 0x20:
@@ -461,6 +546,8 @@ export class Machine implements CpuBus {
       this.syncDevices();
       if (this.model.video === 'cga') {
         if (this.cga.owns(port)) this.cga.write(port, value);
+      } else if (this.model.video === 'mcga') {
+        if (this.mcga.owns(port)) this.mcga.write(port, value);
       } else {
         this.vga.write(port, value);
       }
@@ -490,14 +577,25 @@ export class Machine implements CpuBus {
     const ticks = Math.floor(this.pitFraction);
     this.pitFraction -= ticks;
     if (ticks > 0) this.pit.advance(ticks);
-    if (this.isPc) this.refreshMemory(ticks);
+    if (this.hasPpi) this.refreshMemory(ticks);
     this.speaker.advanceTo(this.pit.ticks);
     this.refreshTime = (this.refreshTime + seconds) % 1;
     this.video.advance(seconds);
-    this.rtc.advance(seconds);
+    if (this.model.cmos === 'mm58167') this.clock.advance(seconds);
+    else this.rtc.advance(seconds);
     this.fdc.advance(seconds);
-    if (this.isPc) this.ppi.advance(seconds);
+    if (this.hasPpi) this.ppi.advance(seconds);
+    else if (this.hasGateArray) this.gateArray.advance(seconds);
     else this.kbc.advance(seconds);
+  }
+
+  /** The gate array's port 65h: MCGA and the serial port can be switched off. */
+  private applyPlanarEnables(): void {
+    const enables = this.gateArray.port65;
+    this.mcga.enabled = (enables & 0x04) !== 0;
+    this.uart.enabled = (enables & 0x10) !== 0;
+    this.uart.base = 0x3f8;
+    this.lptBase = enables & 0x02 ? 0x378 : -16;
   }
 
   /** On the PC and XT, each period of timer 1 asks DMA channel 0 for a refresh cycle. */

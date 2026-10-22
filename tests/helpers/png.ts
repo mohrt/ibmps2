@@ -1,5 +1,6 @@
 import { deflateSync } from 'node:zlib';
 import { Cga } from '../../src/video/cga';
+import { Mcga } from '../../src/video/mcga';
 import { MAX_WIDTH, type Vga } from '../../src/video/vga';
 import { crc32 } from '../../src/util/crc32';
 
@@ -14,7 +15,7 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
 }
 
 /** Encodes the display adapter's last picture as an RGB PNG. */
-export function framePng(video: Vga | Cga): Uint8Array {
+export function framePng(video: Vga | Cga | Mcga): Uint8Array {
   const { framebuffer, width, height } = video;
   const raw = new Uint8Array(height * (1 + width * 3));
   for (let y = 0; y < height; y++) {
@@ -46,11 +47,12 @@ export function framePng(video: Vga | Cga): Uint8Array {
   return png;
 }
 
-/** The text on a text screen (from the CRTC's start address: in the VGA's plane 0, or the CGA's memory). */
-export function screenText(video: Vga | Cga): string {
+/** The text on a text screen (from the CRTC's start address: in the VGA's plane 0, or the CGA's or MCGA's memory). */
+export function screenText(video: Vga | Cga | Mcga): string {
   const cga = video instanceof Cga;
-  const start = ((video.crtc[0x0c] << 8) | video.crtc[0x0d]) * 2;
-  const columns = cga ? video.crtc[1] : video.crtc[1] + 1;
+  const mcga = video instanceof Mcga;
+  const start = ((video.crtc[0x0c] << 8) | video.crtc[0x0d]) * 2 + (mcga ? 0x8000 : 0);
+  const columns = cga ? video.crtc[1] : mcga ? (video.crtc[1] + 1) * (video.cgaMode & 1 ? 2 : 1) : video.crtc[1] + 1;
   const mask = cga ? 0x3fff : 0xffff;
   const rows = 25;
   const lines: string[] = [];

@@ -1,4 +1,5 @@
 import type { Machine } from '../machine';
+import { hasMousePort } from '../models';
 
 /** Mouse counts per pixel the pointer moves (the PS/2 mouse counts 4 a millimetre by default). */
 const MOUSE_SCALE = 1;
@@ -32,7 +33,7 @@ export class BrowserInput {
     this.canvas.addEventListener('mousedown', (event) => {
       if (!this.mouseCaptured) {
         // Only the PS/2s and PS/1 have a mouse port.
-        if (this.machine.kbc.hasAux) void this.canvas.requestPointerLock?.();
+        if (hasMousePort(this.machine.model)) void this.canvas.requestPointerLock?.();
         return;
       }
       this.setButton(event.button, true);

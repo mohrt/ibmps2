@@ -36,10 +36,10 @@ type TypedArray =
 
 /**
  * Fields that are never part of a save state: the ROM (the player supplies
- * the BIOS), the floppies (kept apart), the picture and scratch buffers, and
- * the chips' links to their host.
+ * the BIOS), the model's spec (fixed, and shared), the floppies (kept apart),
+ * the picture and scratch buffers, and the chips' links to their host.
  */
-const SKIPPED_FIELDS = new Set(['rom', 'disk', 'framebuffer', 'attributeOut', 'lineBuffer', 'buffer', 'host']);
+const SKIPPED_FIELDS = new Set(['rom', 'model', 'disk', 'framebuffer', 'attributeOut', 'lineBuffer', 'buffer', 'host']);
 
 const isTyped = (value: unknown): value is TypedArray => ArrayBuffer.isView(value) && !(value instanceof DataView);
 

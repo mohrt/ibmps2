@@ -22,7 +22,15 @@ const FORMATS: FloppyGeometry[] = [
   { cylinders: 40, heads: 1, sectors: 8, highDensity: false, label: '160 KB' },
 ];
 
-export const BLANK_SIZE = 80 * 2 * 18 * SECTOR_BYTES;
+/** How DOS's FORMAT lays out each size of disk: sectors per cluster, root directory entries, media byte, sectors per FAT. */
+const BLANK_LAYOUTS = {
+  '1.44 MB': { sectors: 2880, perTrack: 18, cluster: 1, root: 224, media: 0xf0, fat: 9 },
+  '1.2 MB': { sectors: 2400, perTrack: 15, cluster: 1, root: 224, media: 0xf9, fat: 7 },
+  '720 KB': { sectors: 1440, perTrack: 9, cluster: 2, root: 112, media: 0xf9, fat: 3 },
+  '360 KB': { sectors: 720, perTrack: 9, cluster: 2, root: 112, media: 0xfd, fat: 2 },
+};
+
+export type BlankFormat = keyof typeof BLANK_LAYOUTS;
 
 /** Boot code for a disk without DOS on it: says so, waits for a key and tries the next disk (INT 19h). */
 const NOT_BOOTABLE_CODE = [
@@ -31,21 +39,22 @@ const NOT_BOOTABLE_CODE = [
 ];
 const NOT_BOOTABLE_MESSAGE = 'Not a startup disk. Insert another disk and press a key.\r\n';
 
-/** A 1.44 MB disk with an empty FAT12 file system, as DOS's FORMAT A: leaves it. */
-export function formattedDisk(): Uint8Array {
-  const disk = new Uint8Array(BLANK_SIZE);
+/** A disk with an empty FAT12 file system, as DOS's FORMAT A: leaves it (1.44 MB unless asked for another size). */
+export function formattedDisk(format: BlankFormat = '1.44 MB'): Uint8Array {
+  const layout = BLANK_LAYOUTS[format];
+  const disk = new Uint8Array(layout.sectors * SECTOR_BYTES);
   const view = new DataView(disk.buffer);
   disk.set([0xeb, 0x3c, 0x90], 0);
   disk.set(new TextEncoder().encode('IBMPS2  '), 3);
   view.setUint16(11, SECTOR_BYTES, true);
-  disk[13] = 1; // sectors per cluster
+  disk[13] = layout.cluster; // sectors per cluster
   view.setUint16(14, 1, true); // reserved sectors
   disk[16] = 2; // FATs
-  view.setUint16(17, 224, true); // root directory entries
-  view.setUint16(19, 2880, true); // sectors
-  disk[21] = 0xf0; // media descriptor
-  view.setUint16(22, 9, true); // sectors per FAT
-  view.setUint16(24, 18, true); // sectors per track
+  view.setUint16(17, layout.root, true); // root directory entries
+  view.setUint16(19, layout.sectors, true); // sectors
+  disk[21] = layout.media; // media descriptor
+  view.setUint16(22, layout.fat, true); // sectors per FAT
+  view.setUint16(24, layout.perTrack, true); // sectors per track
   view.setUint16(26, 2, true); // heads
   disk[38] = 0x29;
   view.setUint32(39, (Date.now() & 0xffffffff) >>> 0, true);
@@ -54,7 +63,7 @@ export function formattedDisk(): Uint8Array {
   disk.set(new TextEncoder().encode(`${NOT_BOOTABLE_MESSAGE}\0`), 0x3e + NOT_BOOTABLE_CODE.length);
   disk[510] = 0x55;
   disk[511] = 0xaa;
-  for (const fat of [1, 10]) disk.set([0xf0, 0xff, 0xff], fat * SECTOR_BYTES);
+  for (const fat of [1, 1 + layout.fat]) disk.set([layout.media, 0xff, 0xff], fat * SECTOR_BYTES);
   return disk;
 }
 
@@ -81,9 +90,9 @@ export class FloppyImage {
     this.geometry = geometry;
   }
 
-  /** A 1.44 MB disk formatted for DOS (FAT12, no system files on it). */
-  static blank(name: string): FloppyImage {
-    return new FloppyImage(formattedDisk(), name);
+  /** A disk formatted for DOS (FAT12, no system files on it). */
+  static blank(name: string, format?: BlankFormat): FloppyImage {
+    return new FloppyImage(formattedDisk(format), name);
   }
 
   /** The byte offset of a sector, or -1 if the disk has no such sector. */

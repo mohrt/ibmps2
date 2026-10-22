@@ -1,4 +1,22 @@
-import { SET2_MAKE, SET2_PAUSE, set2Break } from './scancodes';
+import { SET2_MAKE, SET2_PAUSE, SET2_TO_SET1, set2Break } from './scancodes';
+
+/** Pause in scan code set 1. */
+const SET1_PAUSE = [0xe1, 0x1d, 0x45, 0xe1, 0x9d, 0xc5];
+
+/** A set 2 make or break sequence in set 1, for keyboards told to send it (with no 8042 to translate). */
+function toSet1(set2: number[]): number[] {
+  const out: number[] = [];
+  let broken = false;
+  for (const byte of set2) {
+    if (byte === 0xe0) out.push(byte);
+    else if (byte === 0xf0) broken = true;
+    else {
+      out.push(SET2_TO_SET1[byte] | (broken ? 0x80 : 0));
+      broken = false;
+    }
+  }
+  return out;
+}
 
 /** How long the keyboard's power-on self test takes after a reset command. */
 const SELF_TEST_SECONDS = 0.3;
@@ -6,7 +24,8 @@ const SELF_TEST_SECONDS = 0.3;
 /**
  * An IBM Model M on the PS/2 keyboard port: it answers the controller's
  * commands (reset, identify, LEDs, typematic rate, scan code set) and sends
- * scan code set 2 for key presses. Bytes for the controller wait in `output`.
+ * scan code set 2 for key presses (set 1 when told to, as the Model 25 and 30
+ * BIOS does). Bytes for the controller wait in `output`.
  */
 export class Ps2Keyboard {
   readonly output: number[] = [];
@@ -111,16 +130,21 @@ export class Ps2Keyboard {
     if (this.selfTest <= 0) this.send(0xaa);
   }
 
+  /** Sends a key's set 2 codes, or their set 1 equivalent. */
+  private sendKey(set2: number[]): void {
+    if (this.enabled) this.send(...(this.scanSet === 1 ? toSet1(set2) : set2));
+  }
+
   /** A browser key went down (or repeated). Returns false for keys the PS/2 keyboard doesn't have. */
   press(code: string): boolean {
     if (code === 'Pause') {
-      if (this.enabled) this.send(...SET2_PAUSE);
+      if (this.enabled) this.send(...(this.scanSet === 1 ? SET1_PAUSE : SET2_PAUSE));
       return true;
     }
     const make = SET2_MAKE[code];
     if (!make) return false;
     this.held.add(code);
-    if (this.enabled) this.send(...make);
+    this.sendKey(make);
     return true;
   }
 
@@ -128,7 +152,7 @@ export class Ps2Keyboard {
     const make = SET2_MAKE[code];
     if (!make) return code === 'Pause';
     if (!this.held.delete(code)) return true;
-    if (this.enabled) this.send(...set2Break(make));
+    this.sendKey(set2Break(make));
     return true;
   }
 
