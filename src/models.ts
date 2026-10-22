@@ -1,4 +1,4 @@
-import { defaultAtCmos, defaultCmos } from './chips/cmos-defaults';
+import { defaultAtCmos, defaultCmos, storeCrc } from './chips/cmos-defaults';
 import type { DriveKind } from './chips/fdc';
 import type { BlankFormat } from './drive/floppy-image';
 
@@ -202,6 +202,14 @@ export function memoryLabel(kilobytes: number): string {
 export function freshCmos(model: ModelSpec, kilobytes: number, secondDrive: boolean): Uint8Array | null {
   const drives = secondDrive ? model.drives : [model.drives[0]];
   if (model.cmos === 'at') return defaultAtCmos(kilobytes, drives);
-  if (model.cmos === 'ps2') return defaultCmos(kilobytes, secondDrive ? 2 : 1);
+  if (model.cmos === 'ps2') {
+    const cmos = defaultCmos(kilobytes, secondDrive ? 2 : 1);
+    // The PS/1's start-up setting (2Eh bits 0-1): from a disk in A: if there is one, otherwise its built-in DOS.
+    if (model.id === 'ps1-2011') {
+      cmos[0x2e] = (cmos[0x2e] & ~0x03) | 0x02;
+      storeCrc(cmos);
+    }
+    return cmos;
+  }
   return null;
 }

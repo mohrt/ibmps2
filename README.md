@@ -74,7 +74,7 @@ Your disk images are never changed. What programs write to a disk is kept in the
 
 ## Accuracy
 
-Both of IBM's Model 30 286 BIOSes, the Model 30's and Model 25's, the PC/AT's, the PC/XT's and the PC's pass their power-on self tests with no errors, FreeDOS boots on all of them, and the free disks run. The PS/1 starts its built-in DOS shell.
+Both of IBM's Model 30 286 BIOSes, the Model 30's and Model 25's, the PC/AT's, the PC/XT's and the PC's pass their power-on self tests with no errors, FreeDOS boots on all of them, and the free disks run. The PS/1 starts from a disk in A: when there is one (its CMOS start-up setting is set up that way), and its built-in DOS shell otherwise.
 
 The CPU's timing is per instruction, from Intel's clock counts, not per bus cycle, and it isn't slowed by the memory's wait states. The chips are brought up to the CPU's time at least every 100 µs, and whenever the CPU reads one whose state depends on time (the timer, the VGA's status, the keyboard controller, the CMOS clock).
 

@@ -220,10 +220,10 @@ export class Mcga {
         this.drawCga4(y, row);
         break;
       case Mode.Cga6:
-        this.drawTwoColour(this.vram, 0x8000 + this.cgaRow(y), 0x7fff, row);
+        this.drawTwoColour(0x8000, this.cgaRow(y), 0x7fff, row);
         break;
       case Mode.Mode11:
-        this.drawTwoColour(this.vram, (this.startAddress << 1) + y * 80, 0xffff, row);
+        this.drawTwoColour(0, (this.startAddress << 1) + y * 80, 0xffff, row);
         break;
       case Mode.Mode13: {
         const start = (this.startAddress << 1) + (y >> 1) * 320;
@@ -293,14 +293,14 @@ export class Mcga {
     }
   }
 
-  /** 640-wide two-colour graphics: the foreground is the border register's colour (white in black and white). */
-  private drawTwoColour(vram: Uint8Array, start: number, mask: number, row: number): void {
+  /** 640-wide two-colour graphics from `base` in video memory: the foreground is the border register's colour (white in black and white). */
+  private drawTwoColour(base: number, start: number, mask: number, row: number): void {
     const out = this.framebuffer;
     const fg = this.palette[this.cgaMode & Cga.Mono ? 0x07 : this.border & 0x0f];
     const bg = this.palette[0];
     let x = row;
     for (let byte = 0; byte < 80; byte++) {
-      const data = vram[(start + byte) & mask];
+      const data = this.vram[base + ((start + byte) & mask)];
       for (let bit = 7; bit >= 0; bit--) out[x++] = (data >> bit) & 1 ? fg : bg;
     }
   }

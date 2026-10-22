@@ -27,8 +27,14 @@ function romFiles(dir = join(root, 'roms')): { name: string; data: Uint8Array }[
   });
 }
 
+export interface ModelOptions {
+  kilobytes?: number;
+  /** A disk for drive B:, which is fitted when given. */
+  diskB?: FloppyImage;
+}
+
 /** A machine of the given model with its ROMs from roms/ (null when they aren't all there). */
-export async function startModel(id: ModelId, disk?: FloppyImage, kilobytes?: number): Promise<Machine | null> {
+export async function startModel(id: ModelId, disk?: FloppyImage, { kilobytes, diskB }: ModelOptions = {}): Promise<Machine | null> {
   const library = new RomLibrary(new MemoryStore());
   await library.add(romFiles(), id);
   const rom = await library.assemble(id);
@@ -44,10 +50,12 @@ export async function startModel(id: ModelId, disk?: FloppyImage, kilobytes?: nu
     if (extra === 'cga-font') machine.setCgaFont(part.image);
   }
   machine.setMemory(memory);
-  const cmos = freshCmos(model, memory, false);
+  machine.fdc.drives[1].connected = diskB !== undefined;
+  const cmos = freshCmos(model, memory, diskB !== undefined);
   if (cmos) machine.loadCmos(cmos);
   machine.powerOn(new Date(2026, 9, 22, 12, 0, 0));
   if (disk) machine.insertDisk(0, disk);
+  if (diskB) machine.insertDisk(1, diskB);
   return machine;
 }
 
@@ -88,16 +96,27 @@ export function runUntilText(machine: Machine, text: string, limitSeconds = 20):
   return false;
 }
 
-const CODES: Record<string, string> = { ' ': 'Space', '\n': 'Enter', '.': 'Period', '\\': 'Backslash', '-': 'Minus' };
+const CODES: Record<string, string> = { ' ': 'Space', '\n': 'Enter', '.': 'Period', '\\': 'Backslash', '-': 'Minus', '/': 'Slash' };
+/** Characters typed with Shift, by their key. */
+const SHIFTED: Record<string, string> = { ':': 'Semicolon', '*': 'Digit8' };
 
 /** Types text on the PS/2's keyboard, a key every tenth of a second. */
 export function typeText(machine: Machine, text: string): void {
   const keyboard = machine.kbc.keyboard;
   for (const char of text) {
-    const code = CODES[char] ?? (/[0-9]/.test(char) ? `Digit${char}` : `Key${char.toUpperCase()}`);
+    const shifted = SHIFTED[char];
+    const code = shifted ?? CODES[char] ?? (/[0-9]/.test(char) ? `Digit${char}` : `Key${char.toUpperCase()}`);
+    if (shifted) {
+      keyboard.press('ShiftLeft');
+      machine.run(machine.cpuHz / 50);
+    }
     keyboard.press(code);
     machine.run(machine.cpuHz / 20);
     keyboard.release(code);
+    if (shifted) {
+      machine.run(machine.cpuHz / 50);
+      keyboard.release('ShiftLeft');
+    }
     machine.run(machine.cpuHz / 20);
   }
 }
