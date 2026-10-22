@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.DS_Store
+
+# The IBM BIOS is never committed: your own goes in roms/ (for the tests only).
+/roms/
+
+# Disk images supplied locally, free games and test files are downloaded by scripts.
+/disks/
+*.img
+*.ima
+*.vfd
+public/games/
+tests/fixtures/80286/

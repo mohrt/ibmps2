@@ -1,0 +1,647 @@
+:root {
+  /* The monitor's 4:3, set again from the page at start. */
+  --screen-aspect: 1.3333;
+  --screen-width: min(96vw, calc(68vh * var(--screen-aspect)));
+  --accent: #ff6a2b;
+  --accent-soft: #ffb08a;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #111;
+  color: #888;
+  font-family: system-ui, sans-serif;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  gap: 0.75rem;
+  padding: 1rem 0;
+  box-sizing: border-box;
+}
+
+.screen-frame {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+#screen {
+  display: block;
+  width: var(--screen-width);
+  aspect-ratio: var(--screen-aspect);
+  image-rendering: pixelated;
+  outline: none;
+  background: #000;
+}
+
+.screen-frame:fullscreen {
+  align-items: center;
+  background: #000;
+}
+
+.screen-frame:fullscreen #screen {
+  width: min(100vw, calc(100vh * var(--screen-aspect)));
+}
+
+.paused-label,
+.mouse-label {
+  display: none;
+  position: absolute;
+  top: 50%;
+  margin: 0;
+  padding: 0.4rem 1rem;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 70%);
+  color: #fff;
+  font-size: 1.2rem;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.screen-frame.paused .paused-label {
+  display: block;
+}
+
+body:not(.needs-roms) .screen-frame:hover .mouse-label:not([hidden]) {
+  display: block;
+  top: auto;
+  bottom: 0.75rem;
+  font-size: 0.85rem;
+  transform: none;
+}
+
+#status {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.site-links,
+.emulator-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem 1.25rem;
+  font-size: 0.85rem;
+}
+
+.site-links a,
+.emulator-links a {
+  color: var(--accent-soft);
+  text-decoration: none;
+}
+
+.site-links a:hover,
+.site-links a:focus-visible,
+.emulator-links a:hover,
+.emulator-links a:focus-visible {
+  text-decoration: underline;
+}
+
+.emulator-links strong {
+  color: #ddd;
+  font-weight: 600;
+}
+
+/* Buttons and fields */
+
+button,
+select {
+  padding: 0.35rem 0.75rem;
+  border: 1px solid #555;
+  border-radius: 6px;
+  background: #2a2a2a;
+  color: #eee;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+select {
+  max-width: 16rem;
+  padding: 0.35rem 0.4rem;
+}
+
+button:hover,
+button:focus-visible,
+select:focus-visible {
+  border-color: var(--accent) !important;
+  outline: none;
+}
+
+button:disabled,
+select:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+input[type='checkbox'],
+input[type='range'] {
+  accent-color: var(--accent);
+}
+
+/* Toolbar */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  width: var(--screen-width);
+}
+
+.toolbar-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.toolbar-message {
+  font-size: 0.85rem;
+  color: #9ad284;
+}
+
+.toolbar-message.error {
+  color: #ff8a80;
+}
+
+/* ROM setup: shown in place of the screen until the system ROMs are loaded */
+
+body.needs-roms #screen,
+body.needs-roms .toolbar,
+body.needs-roms .disk-panel,
+body.needs-roms .controls {
+  display: none;
+}
+
+.rom-setup {
+  width: var(--screen-width);
+  min-height: calc(var(--screen-width) / var(--screen-aspect));
+  box-sizing: border-box;
+  padding: 1.5rem 1.75rem;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  background: #1a1a1a;
+  color: #ccc;
+  font-size: 0.9rem;
+}
+
+.rom-setup[hidden] {
+  display: none;
+}
+
+.rom-setup p {
+  margin: 0;
+}
+
+.rom-setup h1 {
+  margin: 0 0 0.5rem;
+  color: #fff;
+  font-size: 1.4rem;
+}
+
+.rom-setup-lead {
+  color: #bbb;
+  line-height: 1.45;
+}
+
+.rom-setup code {
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  background: #2a2a2a;
+  color: #fff;
+  font-size: 0.85em;
+}
+
+.rom-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 1rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rom-list li {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid #3d3d3d;
+  border-left: 4px solid #ff8a80;
+  border-radius: 6px;
+  background: #202020;
+}
+
+.rom-list li[hidden],
+.rom-choice[hidden] {
+  display: none;
+}
+
+.rom-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  color: #aaa;
+  font-size: 0.85rem;
+}
+
+.setup-section {
+  margin-top: 1rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid #3d3d3d;
+  border-radius: 6px;
+  background: #202020;
+}
+
+.setup-section h2 {
+  margin: 0 0 0.5rem;
+  color: #eee;
+  font-size: 1rem;
+}
+
+.setup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-top: 0.4rem !important;
+}
+
+.setup-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #ddd;
+}
+
+.rom-choice label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #eee;
+}
+
+.rom-list li.optional {
+  border-left-color: #c9a227;
+}
+
+.rom-list li[data-state='loaded'] {
+  border-left-color: #9ad284;
+}
+
+.rom-list li[data-state='warning'] {
+  border-left-color: #c9a227;
+}
+
+.rom-heading strong {
+  color: #eee;
+  font-size: 1rem;
+}
+
+.rom-need {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  background: #3d2424;
+  color: #ff8a80;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.optional .rom-need {
+  background: #3d3524;
+  color: #c9a227;
+}
+
+.rom-detail,
+.rom-names {
+  color: #aaa;
+  font-size: 0.85rem;
+}
+
+.rom-status {
+  color: #ff8a80;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.optional[data-state='missing'] .rom-status,
+[data-state='warning'] .rom-status {
+  color: #c9a227;
+}
+
+[data-state='loaded'] .rom-status {
+  color: #9ad284;
+}
+
+.rom-tip {
+  color: #999;
+  font-size: 0.85rem;
+}
+
+.rom-tip a {
+  color: var(--accent-soft);
+}
+
+.rom-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.rom-setup button,
+.rom-line button {
+  padding: 0.5rem 1.1rem;
+  border: 1px solid #555;
+  border-radius: 6px;
+  background: #2a2a2a;
+  color: #eee;
+  font: inherit;
+  cursor: pointer;
+}
+
+.rom-line button {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.rom-setup button.primary,
+.rom-setup button[data-action='start']:not(:disabled) {
+  border-color: var(--accent);
+  background: #5a2a17;
+  color: #fff;
+}
+
+.rom-setup button:hover:not(:disabled),
+.rom-setup button:focus-visible,
+.rom-line button:hover,
+.rom-line button:focus-visible {
+  border-color: #ffb08a;
+  outline: none;
+}
+
+.rom-setup button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.rom-message:not(:empty) {
+  margin-top: 0.75rem;
+  color: #ff8a80;
+}
+
+.rom-storage-note:not(:empty) {
+  margin-top: 0.75rem;
+  color: #c9a227;
+}
+
+.rom-drop-hint {
+  display: none;
+  padding: 2rem 0;
+  color: #fff;
+  font-size: 1.2rem;
+  text-align: center;
+}
+
+.rom-setup.drag-over {
+  border-style: solid;
+  background: #2a1d17;
+}
+
+.rom-setup.drag-over > :not(.rom-drop-hint) {
+  display: none;
+}
+
+.rom-setup.drag-over .rom-drop-hint {
+  display: block;
+}
+
+.rom-line {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.rom-line[hidden] {
+  display: none;
+}
+
+/* Disk drives */
+
+.disk-panel {
+  width: var(--screen-width);
+  box-sizing: border-box;
+  padding: 0.9rem 1.25rem;
+  border: 2px dashed #555;
+  border-radius: 10px;
+  background: #1a1a1a;
+  color: #ccc;
+  text-align: center;
+  font-size: 0.9rem;
+  transition:
+    border-color 0.15s,
+    background-color 0.15s;
+}
+
+.disk-panel p {
+  margin: 0;
+}
+
+.drive {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.6rem;
+  padding: 0.4rem 0;
+  text-align: left;
+}
+
+.drive[hidden] {
+  display: none;
+}
+
+.drive + .drive {
+  border-top: 1px solid #2c2c2c;
+}
+
+.drive-led {
+  flex: none;
+  width: 0.7rem;
+  height: 0.35rem;
+  border-radius: 2px;
+  background: #3a1d12;
+}
+
+.drive.active .drive-led {
+  background: #ff7a3c;
+  box-shadow: 0 0 6px #ff7a3c;
+}
+
+.drive-label {
+  color: #eee;
+}
+
+.disk-name {
+  color: #eee;
+  font-size: 1rem;
+}
+
+.drive[data-state='empty'] .disk-name {
+  color: #888;
+}
+
+.disk-detail {
+  color: #888;
+  font-size: 0.8rem;
+}
+
+.disk-saved {
+  color: #9ad284;
+  font-size: 0.8rem;
+}
+
+.drive-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+
+.drive[data-state='empty'] [data-action='eject'],
+.drive[data-state='empty'] [data-action='download'] {
+  display: none;
+}
+
+.disk-hint {
+  margin-top: 0.5rem !important;
+  color: #888;
+  font-size: 0.8rem;
+}
+
+.disk-drop-hint {
+  display: none;
+  font-size: 1.05rem;
+  color: #fff;
+}
+
+.disk-panel.drag-over {
+  border-style: solid;
+  border-color: var(--accent);
+  background: #2a1d17;
+}
+
+.disk-panel.drag-over > :not(.disk-drop-hint, .drive) {
+  display: none !important;
+}
+
+.disk-panel.drag-over .disk-drop-hint {
+  display: block;
+}
+
+.bundled-games-row,
+.save-disks,
+.disk-options {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.75rem !important;
+  font-size: 0.85rem;
+  color: #aaa;
+}
+
+.save-disk-list:not([hidden]) {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.disk-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.game-info {
+  margin-top: 0.35rem !important;
+  font-size: 0.8rem;
+  color: #999;
+}
+
+.game-info a {
+  color: var(--accent-soft);
+}
+
+.swap-disk {
+  border-color: var(--accent);
+}
+
+.disk-message:not(:empty) {
+  margin-top: 0.6rem !important;
+  color: #ff8a80;
+  font-size: 0.9rem;
+}
+
+.disk-message.warning {
+  color: #c9a227;
+}
+
+.toolbar-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: #bbb;
+}
+
+/* Sound and keyboard */
+
+.controls {
+  width: var(--screen-width);
+  box-sizing: border-box;
+  color: #bbb;
+  font-size: 0.9rem;
+}
+
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+}
+
+.controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.controls input[type='range'] {
+  width: 6rem;
+}
+
+.sound-hint {
+  color: #c9a227;
+}
+
+.controls-hint {
+  margin: 0.5rem 0 0;
+  color: #777;
+  font-size: 0.8rem;
+  text-align: center;
+}
